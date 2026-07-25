@@ -17,17 +17,27 @@ jobs:
           flutter-version: '3.24.0'
           channel: 'stable'
 
+      - name: Create Flutter project
+        run: |
+          flutter create kady_build --project-name kady_sales
+          rm -rf kady_build/lib/*
+          cp -r lib/* kady_build/lib/
+          cp pubspec.yaml kady_build/pubspec.yaml
+          mkdir -p kady_build/assets/images
+          sed -i 's/uses-material-design: true/uses-material-design: true
+  assets:
+    - assets\/images\//' kady_build/pubspec.yaml
+
       - name: Install dependencies
+        working-directory: ./kady_build
         run: flutter pub get
 
-      - name: Analyze code
-        run: flutter analyze || true
-
       - name: Build APK
+        working-directory: ./kady_build
         run: flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: kady_build/build/app/outputs/flutter-apk/app-release.apk
