@@ -1,0 +1,355 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart';
+import 'package:uuid/uuid.dart';
+
+import '../models/customer.dart';
+import '../models/product.dart';
+import '../models/invoice.dart';
+import '../models/receipt.dart';
+import '../models/company_settings.dart';
+import '../models/ledger_entry.dart';
+import '../models/customer_stats.dart';
+import '../services/db_service.dart';
+import '../services/numbering_service.dart';
+import '../services/settings_service.dart';
+import '../services/auto_backup_service.dart';
+
+/// المزوّد المركزي لحالة التطبيق: عملاء، منتجات، إعدادات، وعمليات
+/// حفظ الفواتير/السندات مع حساب المديونية والترقيم التلقائي
+class AppProvider extends ChangeNotifier {
+  final _uuid = const Uuid();
+
+  List<Customer> customers = [];
+  List<Product> products = [];
+  CompanySettings settings = CompanySettings();
+  bool loading = true;
+  String? initError;
+
+  Future<void> init() async {
+    loading = true;
+    initError = null;
+    notifyListeners();
+    try {
+      customers = await DbService.instance.getCustomers();
+      products = await DbService.instance.getProducts();
+      settings = await SettingsService.instance.load();
+      // نسخ احتياطي تلقائي (يومي/أسبوعي) إن كان مفعّلاً وحان وقته — فشله
+      // لا يجب أن يمنع فتح التطبيق، لذا يُعالَج بصمت داخليًا
+      unawaited(AutoBackupService.runIfDue(settings));
+    } catch (e, st) {
+      // نطبع الخطأ بالتفصيل في السجل (logcat) ونحفظه لعرضه في الواجهة أيضاً
+      // بدل ترك المستخدم أمام شاشة بيضاء بلا أي توضيح لسبب التعليق.
+      debugPrint('AppProvider.init() failed: $e');
+      debugPrint('$st');
+      initError = e.toString();
+    }
+    loading = false;
+    notifyListeners();
+  }
+
+  bool get isManager => settings.isManager;
+
+  // ---------------- عملاء ----------------
+  Future<void> saveCustomer(Customer c) async {
+    // نحافظ على تاريخ الإنشاء الأصلي عند التعديل، ونعلّم السجل كـ"بانتظار
+    // المزامنة" حتى يصل إلى المدير في التصدير القادم
+    final existing = await DbService.instance.getCustomerById(c.id);
+    c.createdAt = existing?.createdAt ?? c.createdAt;
+    c.updatedAt = DateTime.now();
+    c.syncStatus = 'pending';
+    await DbService.instance.upsertCustomer(c);
+    await DbService.instance.enqueueSync('customer', c.id);
+    customers = await DbService.instance.getCustomers();
+    notifyListeners();
+  }
+
+  Future<void> deleteCustomer(String id) async {
+    await DbService.instance.deleteCustomer(id);
+    customers = await DbService.instance.getCustomers();
+    notifyListeners();
+  }
+
+  Customer newCashCustomer() => Customer(id: _uuid.v4(), name: 'عميل نقدي');
+
+  Future<void> togglePinCustomer(String id) async {
+    final idx = customers.indexWhere((c) => c.id == id);
+    if (idx == -1) return;
+    customers[idx].isPinned = !customers[idx].isPinned;
+    await DbService.instance.upsertCustomer(customers[idx]);
+    customers = await DbService.instance.getCustomers();
+    notifyListeners();
+  }
+
+  /// ملخّص محسوب للعميل: الرصيد، عدد الفواتير، إجمالي المقبوض والمرتجع،
+  /// وتاريخ آخر نشاط ورقم آخر فاتورة — تُستخدم في بطاقة العميل وصفحته
+  Future<CustomerStats> getCustomerStats(String customerId) async {
+    final c = customers.firstWhere((c) => c.id == customerId,
+        orElse: () => Customer(id: customerId, name: ''));
+    final invoices = await DbService.instance.getInvoices(customerId: customerId);
+    final receipts = await DbService.instance.getReceipts(customerId: customerId);
+
+    double balance = c.openingBalance;
+    double received = 0;
+    double returns = 0;
+    int salesCount = 0;
+    DateTime? lastActivity;
+    String? lastInvoiceNumber;
+    DateTime? lastInvoiceDate;
+
+    for (final inv in invoices) {
+      balance += inv.effect;
+      if (inv.kind == InvoiceKind.sale) salesCount++;
+      if (inv.kind == InvoiceKind.saleReturn) returns += inv.grandTotal;
+      if (lastActivity == null || inv.date.isAfter(lastActivity)) {
+        lastActivity = inv.date;
+      }
+      if (lastInvoiceDate == null || inv.date.isAfter(lastInvoiceDate)) {
+        lastInvoiceDate = inv.date;
+        lastInvoiceNumber = inv.docNumber;
+      }
+    }
+    for (final r in receipts) {
+      balance -= r.amount;
+      received += r.amount;
+      if (lastActivity == null || r.date.isAfter(lastActivity)) {
+        lastActivity = r.date;
+      }
+    }
+
+    return CustomerStats(
+      balance: balance,
+      invoicesCount: salesCount,
+      receivedTotal: received,
+      returnsTotal: returns,
+      lastActivityDate: lastActivity,
+      lastInvoiceNumber: lastInvoiceNumber,
+      lastInvoiceDate: lastInvoiceDate,
+    );
+  }
+
+  // ---------------- منتجات ----------------
+  Future<void> saveProduct(Product p) async {
+    await DbService.instance.upsertProduct(p);
+    products = await DbService.instance.getProducts();
+    notifyListeners();
+  }
+
+  Future<void> deleteProduct(String id) async {
+    await DbService.instance.deleteProduct(id);
+    products = await DbService.instance.getProducts();
+    notifyListeners();
+  }
+
+  // ---------------- إعدادات ----------------
+  Future<void> saveSettings(CompanySettings s) async {
+    settings = s;
+    await SettingsService.instance.save(s);
+    notifyListeners();
+  }
+
+  // ---------------- ترقيم المستندات ----------------
+  Future<String> peekNextInvoiceNumber(InvoiceKind kind) {
+    return NumberingService.instance
+        .peekNextNumber(kind == InvoiceKind.sale ? 'sale' : 'return');
+  }
+
+  Future<String> peekNextReceiptNumber() {
+    return NumberingService.instance.peekNextNumber('receipt');
+  }
+
+  // ---------------- رصيد العميل ----------------
+  Future<double> getCustomerBalance(String customerId) async {
+    final c = customers.firstWhere((c) => c.id == customerId,
+        orElse: () => Customer(id: customerId, name: ''));
+    return DbService.instance.getCustomerBalance(customerId, c.openingBalance);
+  }
+
+  /// يحسب الرصيد بعد استبعاد مستند مُعيَّن قيد التعديل حاليًا (لتفادي احتساب
+  /// المستند مرتين عند إعادة حفظه)
+  Future<double> getCustomerBalanceExcluding(
+      String customerId, {String? excludeInvoiceId, String? excludeReceiptId}) async {
+    final c = customers.firstWhere((c) => c.id == customerId,
+        orElse: () => Customer(id: customerId, name: ''));
+    final invoices = await DbService.instance.getInvoices(customerId: customerId);
+    final receipts = await DbService.instance.getReceipts(customerId: customerId);
+    double balance = c.openingBalance;
+    for (final inv in invoices) {
+      if (inv.id == excludeInvoiceId) continue;
+      balance += inv.effect;
+    }
+    for (final r in receipts) {
+      if (r.id == excludeReceiptId) continue;
+      balance -= r.amount;
+    }
+    return balance;
+  }
+
+  // ---------------- حفظ فاتورة ----------------
+  Future<void> saveInvoice(Invoice inv) async {
+    // نحافظ على تاريخ الإنشاء الأصلي عند التعديل، ونعلّم الفاتورة كـ"بانتظار
+    // المزامنة" — كل فاتورة جديدة أو مُعدَّلة تدخل طابور المزامنة تلقائيًا
+    final existing = await DbService.instance.getInvoiceById(inv.id);
+    inv.createdAt = existing?.createdAt ?? inv.createdAt;
+    inv.updatedAt = DateTime.now();
+    inv.syncStatus = 'pending';
+    final baseBalance = await getCustomerBalanceExcluding(inv.customerId,
+        excludeInvoiceId: inv.id);
+    inv.balanceAfter = baseBalance + inv.effect;
+    await DbService.instance.upsertInvoice(inv);
+    await NumberingService.instance
+        .commitUsedNumber(inv.kind == InvoiceKind.sale ? 'sale' : 'return',
+            inv.docNumber);
+    await DbService.instance.enqueueSync('invoice', inv.id);
+    notifyListeners();
+  }
+
+  Future<void> deleteInvoice(String id) async {
+    await DbService.instance.deleteInvoice(id);
+    notifyListeners();
+  }
+
+  Future<Invoice?> getInvoiceById(String id) => DbService.instance.getInvoiceById(id);
+  Future<Receipt?> getReceiptById(String id) => DbService.instance.getReceiptById(id);
+
+  /// تعليم فاتورة/سند كمطبوع أو كمُشارَك، أو تثبيته أعلى سجل المستندات —
+  /// بدون إعادة حساب الرصيد (على عكس saveInvoice/saveReceipt)
+  Future<void> markInvoicePrinted(String id) async {
+    final inv = await DbService.instance.getInvoiceById(id);
+    if (inv == null) return;
+    inv.isPrinted = true;
+    await DbService.instance.upsertInvoice(inv);
+    notifyListeners();
+  }
+
+  Future<void> markInvoiceShared(String id) async {
+    final inv = await DbService.instance.getInvoiceById(id);
+    if (inv == null) return;
+    inv.isShared = true;
+    await DbService.instance.upsertInvoice(inv);
+    notifyListeners();
+  }
+
+  Future<void> toggleInvoicePinned(String id) async {
+    final inv = await DbService.instance.getInvoiceById(id);
+    if (inv == null) return;
+    inv.isPinned = !inv.isPinned;
+    await DbService.instance.upsertInvoice(inv);
+    notifyListeners();
+  }
+
+  Future<void> markReceiptPrinted(String id) async {
+    final r = await DbService.instance.getReceiptById(id);
+    if (r == null) return;
+    r.isPrinted = true;
+    await DbService.instance.upsertReceipt(r);
+    notifyListeners();
+  }
+
+  Future<void> markReceiptShared(String id) async {
+    final r = await DbService.instance.getReceiptById(id);
+    if (r == null) return;
+    r.isShared = true;
+    await DbService.instance.upsertReceipt(r);
+    notifyListeners();
+  }
+
+  Future<void> toggleReceiptPinned(String id) async {
+    final r = await DbService.instance.getReceiptById(id);
+    if (r == null) return;
+    r.isPinned = !r.isPinned;
+    await DbService.instance.upsertReceipt(r);
+    notifyListeners();
+  }
+
+  /// آخر N عملية (فواتير + سندات) عبر كل العملاء، مرتبة تنازليًا حسب التاريخ
+  Future<List<dynamic>> getRecentDocuments({int limit = 5}) async {
+    final invoices = await DbService.instance.getInvoices();
+    final receipts = await DbService.instance.getReceipts();
+    final all = <dynamic>[...invoices, ...receipts];
+    all.sort((a, b) {
+      final da = a is Invoice ? a.date : (a as Receipt).date;
+      final db = b is Invoice ? b.date : (b as Receipt).date;
+      return db.compareTo(da);
+    });
+    return all.take(limit).toList();
+  }
+
+  // ---------------- حفظ سند قبض ----------------
+  Future<void> saveReceipt(Receipt r) async {
+    // نحافظ على تاريخ الإنشاء الأصلي عند التعديل، ونعلّم السند كـ"بانتظار
+    // المزامنة" — كل سند جديد أو مُعدَّل يدخل طابور المزامنة تلقائيًا
+    final existing = await DbService.instance.getReceiptById(r.id);
+    r.createdAt = existing?.createdAt ?? r.createdAt;
+    r.updatedAt = DateTime.now();
+    r.syncStatus = 'pending';
+    final baseBalance =
+        await getCustomerBalanceExcluding(r.customerId, excludeReceiptId: r.id);
+    r.balanceAfter = baseBalance - r.amount;
+    await DbService.instance.upsertReceipt(r);
+    await NumberingService.instance.commitUsedNumber('receipt', r.docNumber);
+    await DbService.instance.enqueueSync('receipt', r.id);
+    notifyListeners();
+  }
+
+  Future<void> deleteReceipt(String id) async {
+    await DbService.instance.deleteReceipt(id);
+    notifyListeners();
+  }
+
+  // ---------------- كشف حساب عميل ----------------
+  Future<List<LedgerEntry>> getCustomerStatement(String customerId) async {
+    final c = customers.firstWhere((c) => c.id == customerId,
+        orElse: () => Customer(id: customerId, name: ''));
+    final invoices = await DbService.instance.getInvoices(customerId: customerId);
+    final receipts = await DbService.instance.getReceipts(customerId: customerId);
+
+    final entries = <LedgerEntry>[];
+
+    if (c.openingBalance != 0) {
+      entries.add(LedgerEntry(
+        date: DateTime(2000),
+        description: 'رصيد افتتاحي',
+        docNumber: '-',
+        docId: 'opening',
+        docType: LedgerDocType.opening,
+        debit: c.openingBalance > 0 ? c.openingBalance : 0,
+        credit: c.openingBalance < 0 ? -c.openingBalance : 0,
+      ));
+    }
+
+    for (final inv in invoices) {
+      final isReturn = inv.kind == InvoiceKind.saleReturn;
+      entries.add(LedgerEntry(
+        date: inv.date,
+        description: isReturn ? 'فاتورة مرتجع' : 'فاتورة بيع',
+        docNumber: inv.docNumber,
+        docId: inv.id,
+        docType: isReturn ? LedgerDocType.invoiceReturn : LedgerDocType.invoiceSale,
+        debit: isReturn ? 0 : inv.grandTotal,
+        credit: isReturn ? inv.grandTotal : 0,
+      ));
+    }
+
+    for (final r in receipts) {
+      entries.add(LedgerEntry(
+        date: r.date,
+        description: 'سند قبض',
+        docNumber: r.docNumber,
+        docId: r.id,
+        docType: LedgerDocType.receipt,
+        debit: 0,
+        credit: r.amount,
+      ));
+    }
+
+    entries.sort((a, b) => a.date.compareTo(b.date));
+
+    double running = 0;
+    for (final e in entries) {
+      running += e.debit - e.credit;
+      e.runningBalance = running;
+    }
+
+    return entries;
+  }
+}

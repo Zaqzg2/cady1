@@ -1,514 +1,583 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
-import 'package:signature/signature.dart';
+import 'pdf_preview_screen.dart';
+import 'package:uuid/uuid.dart';
+import 'package:file_picker/file_picker.dart';
+
 import '../models/customer.dart';
 import '../models/product.dart';
 import '../models/invoice.dart';
 import '../models/invoice_item.dart';
-import '../providers/data_provider.dart';
-import '../utils/pdf_helper.dart';
-import '../utils/print_helper.dart';
+import '../providers/app_provider.dart';
+import '../services/pdf_service.dart';
+import '../services/print_service.dart';
+import '../services/feedback_service.dart';
+import '../services/share_util.dart';
+import '../utils/formatters.dart';
+import '../widgets/big_card.dart';
+import '../widgets/quantity_selector.dart';
+import '../widgets/signature_pad_widget.dart';
 
+/// شاشة الفاتورة: تدعم فاتورة بيع وفاتورة مرتجع، نقدًا أو آجل
+/// يمكن فتحها لإنشاء فاتورة جديدة، أو لتعديل فاتورة محفوظة (existing)
 class InvoiceScreen extends StatefulWidget {
-  final bool isCash;
-  final bool isReturn;
-  final Invoice? existingInvoice;
+  final InvoiceKind kind;
+  final bool forceCashCustomer;
+  final Invoice? existing;
+  final Customer? initialCustomer;
 
-  const InvoiceScreen({super.key, this.isCash = false, this.isReturn = false, this.existingInvoice});
+  const InvoiceScreen({
+    super.key,
+    required this.kind,
+    this.forceCashCustomer = false,
+    this.existing,
+    this.initialCustomer,
+  });
 
   @override
   State<InvoiceScreen> createState() => _InvoiceScreenState();
 }
 
 class _InvoiceScreenState extends State<InvoiceScreen> {
-  late TextEditingController _invoiceNumberCtrl;
-  late TextEditingController _dateCtrl;
-  late TextEditingController _discountPercentCtrl;
-  late TextEditingController _discountAmountCtrl;
-  late TextEditingController _notesCtrl;
+  final _uuid = const Uuid();
+  late String _id;
+  late DateTime _date;
+  final _docNumberCtrl = TextEditingController();
+  PaymentMode _paymentMode = PaymentMode.cash;
+  Customer? _customer;
+  final Map<String, InvoiceItem> _items = {}; // productId -> item
+  final _discountPercentCtrl = TextEditingController(text: '0');
+  final _discountAmountCtrl = TextEditingController(text: '0');
+  final _notesCtrl = TextEditingController();
+  String? _signaturePath;
+  double _previewBalance = 0;
+  bool _saving = false;
 
-  DateTime _selectedDate = DateTime.now();
-  Customer? _selectedCustomer;
-  List<InvoiceItem> _items = [];
-  double _subtotal = 0;
-  double _discountPercent = 0;
-  double _discountAmount = 0;
-  double _total = 0;
-  double _previousBalance = 0;
-  double _newBalance = 0;
-
-  final SignatureController _signatureController = SignatureController(
-    penStrokeWidth: 3, penColor: Colors.black, exportBackgroundColor: Colors.white,
-  );
+  bool get _isReturn => widget.kind == InvoiceKind.saleReturn;
 
   @override
   void initState() {
     super.initState();
-    _initControllers();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadInitialData());
-  }
-
-  void _initControllers() {
-    if (widget.existingInvoice != null) {
-      final inv = widget.existingInvoice!;
-      _invoiceNumberCtrl = TextEditingController(text: inv.invoiceNumber);
-      _selectedDate = inv.date;
-      _items = List.from(inv.items);
-      _discountPercent = inv.discountPercent ?? 0;
-      _discountAmount = inv.discountAmount ?? 0;
-      _notesCtrl = TextEditingController(text: inv.notes);
-      _calculateTotals();
+    final app = context.read<AppProvider>();
+    if (widget.existing != null) {
+      final e = widget.existing!;
+      _id = e.id;
+      _date = e.date;
+      _docNumberCtrl.text = e.docNumber;
+      _paymentMode = e.paymentMode;
+      for (final it in e.items) {
+        _items[it.productId] = it;
+      }
+      _discountPercentCtrl.text = e.discountPercent.toString();
+      _discountAmountCtrl.text = e.discountAmount.toString();
+      _notesCtrl.text = e.notes;
+      _signaturePath = e.signaturePath;
+      _customer = app.customers.firstWhere((c) => c.id == e.customerId,
+          orElse: () => Customer(id: e.customerId, name: e.customerName));
     } else {
-      _invoiceNumberCtrl = TextEditingController();
-      _notesCtrl = TextEditingController();
-    }
-    _dateCtrl = TextEditingController(text: DateFormat('yyyy/MM/dd').format(_selectedDate));
-    _discountPercentCtrl = TextEditingController(text: _discountPercent > 0 ? _discountPercent.toString() : '');
-    _discountAmountCtrl = TextEditingController(text: _discountAmount > 0 ? _discountAmount.toString() : '');
-  }
-
-  Future<void> _loadInitialData() async {
-    final provider = Provider.of<DataProvider>(context, listen: false);
-    await provider.loadCustomers();
-    await provider.loadProducts();
-
-    if (widget.existingInvoice == null) {
-      final nextNum = await provider.getNextInvoiceNumber();
-      setState(() => _invoiceNumberCtrl.text = 'INV\${nextNum.toString().padLeft(5, '0')}');
-    } else {
-      final customer = provider.getCustomerById(widget.existingInvoice!.customerId);
-      if (customer != null) {
-        setState(() {
-          _selectedCustomer = customer;
-          _previousBalance = customer.balance;
-        });
+      _id = _uuid.v4();
+      _date = DateTime.now();
+      app.peekNextInvoiceNumber(widget.kind).then((n) {
+        if (mounted) setState(() => _docNumberCtrl.text = n);
+      });
+      if (widget.forceCashCustomer) {
+        _customer = Customer(id: 'cash_customer', name: 'عميل نقدي');
+      } else if (widget.initialCustomer != null) {
+        _customer = widget.initialCustomer;
       }
     }
+    _recalcBalance();
   }
 
-  void _calculateTotals() {
-    _subtotal = _items.fold(0, (sum, item) => sum + item.total);
-    if (_discountPercent > 0) _discountAmount = _subtotal * (_discountPercent / 100);
-    _total = _subtotal - _discountAmount;
-    if (_total < 0) _total = 0;
-    if (_selectedCustomer != null) {
-      if (widget.isReturn) _newBalance = _previousBalance - _total;
-      else _newBalance = _previousBalance + _total;
+  Future<void> _recalcBalance() async {
+    if (_customer == null) return;
+    final app = context.read<AppProvider>();
+    final base = await app.getCustomerBalanceExcluding(_customer!.id,
+        excludeInvoiceId: _id);
+    final subTotal = _items.values.fold(0.0, (s, i) => s + i.total);
+    final percent = double.tryParse(_discountPercentCtrl.text) ?? 0;
+    final amount = double.tryParse(_discountAmountCtrl.text) ?? 0;
+    final discountVal = subTotal * (percent / 100) + amount;
+    final grand = (subTotal - discountVal).clamp(0, double.infinity);
+    final effect = _isReturn ? -grand : grand;
+    if (mounted) setState(() => _previewBalance = base + effect);
+  }
+
+  double get _subTotal => _items.values.fold(0.0, (s, i) => s + i.total);
+  double get _discountValue {
+    final percent = double.tryParse(_discountPercentCtrl.text) ?? 0;
+    final amount = double.tryParse(_discountAmountCtrl.text) ?? 0;
+    return _subTotal * (percent / 100) + amount;
+  }
+
+  double get _grandTotal {
+    final t = _subTotal - _discountValue;
+    return t < 0 ? 0 : t;
+  }
+
+  Future<void> _pickCustomer() async {
+    final app = context.read<AppProvider>();
+    final selected = await showModalBottomSheet<Customer>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => _CustomerPickerSheet(customers: app.customers),
+    );
+    if (selected != null) {
+      setState(() => _customer = selected);
+      _recalcBalance();
     }
-    setState(() {});
+  }
+
+  void _addProduct(Product p) {
+    setState(() {
+      final existing = _items[p.id];
+      if (existing != null) {
+        existing.quantity += 1;
+      } else {
+        _items[p.id] = InvoiceItem(
+            productId: p.id, productName: p.name, price: p.price, quantity: 1);
+      }
+    });
+    _recalcBalance();
+  }
+
+  Invoice _buildInvoice() {
+    return Invoice(
+      id: _id,
+      docNumber: _docNumberCtrl.text.trim(),
+      date: _date,
+      kind: widget.kind,
+      paymentMode: _paymentMode,
+      customerId: _customer!.id,
+      customerName: _customer!.name,
+      items: _items.values.toList(),
+      discountPercent: double.tryParse(_discountPercentCtrl.text) ?? 0,
+      discountAmount: double.tryParse(_discountAmountCtrl.text) ?? 0,
+      notes: _notesCtrl.text.trim(),
+      signaturePath: _signaturePath,
+    );
+  }
+
+  bool _validate() {
+    if (_customer == null) {
+      _snack('الرجاء اختيار العميل');
+      return false;
+    }
+    if (_items.isEmpty) {
+      _snack('الرجاء إضافة منتج واحد على الأقل');
+      return false;
+    }
+    if (_docNumberCtrl.text.trim().isEmpty) {
+      _snack('الرجاء إدخال رقم الفاتورة');
+      return false;
+    }
+    return true;
+  }
+
+  void _snack(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _save() async {
+    if (!_validate()) return;
+    setState(() => _saving = true);
+    try {
+      final inv = _buildInvoice();
+      await context.read<AppProvider>().saveInvoice(inv);
+      if (mounted) {
+        FeedbackService.onSaved(context);
+        _snack('تم حفظ الفاتورة بنجاح');
+        Navigator.pop(context);
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<Invoice?> _finalizedForOutput() async {
+    if (!_validate()) return null;
+    return _buildInvoice();
+  }
+
+  Future<void> _printInvoice() async {
+    final inv = await _finalizedForOutput();
+    if (inv == null) return;
+    final app = context.read<AppProvider>();
+    final bytes = await PdfService.instance.generateInvoicePdf(inv, app.settings);
+    final ok = await PrintService.instance.printPdfBytes(bytes);
+    _snack(ok ? 'تمت الطباعة' : 'تعذّر الاتصال بالطابعة — تحقق من الإعدادات');
+  }
+
+  Future<void> _downloadPdf() async {
+    final inv = await _finalizedForOutput();
+    if (inv == null) return;
+    final app = context.read<AppProvider>();
+    final bytes = await PdfService.instance.generateInvoicePdf(inv, app.settings);
+    // نستخدم file_picker لنطلب من المستخدم يختار مكان حفظ حقيقي يقدر
+    // يوصله بعدين (مثل مجلد التنزيلات)، بدل حفظه بصمت داخل مساحة
+    // التطبيق الخاصة غير المرئية له عبر مدير الملفات.
+    final outputPath = await FilePicker.platform.saveFile(
+      dialogTitle: 'اختر مكان حفظ الفاتورة',
+      fileName: 'فاتورة_${inv.docNumber}.pdf',
+      bytes: bytes,
+      type: FileType.custom,
+      allowedExtensions: ['pdf'],
+    );
+    if (outputPath == null) return; // ألغى المستخدم
+    _snack('تم حفظ PDF بنجاح');
+  }
+
+  Future<void> _previewInvoice() async {
+    final inv = await _finalizedForOutput();
+    if (inv == null) return;
+    final app = context.read<AppProvider>();
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PdfPreviewScreen(
+          title: _isReturn ? 'فاتورة مرتجع' : 'فاتورة بيع',
+          shareFileName: 'فاتورة_${inv.docNumber}.pdf',
+          buildPdf: () => PdfService.instance.generateInvoicePdf(inv, app.settings),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _sharePdf() async {
+    final inv = await _finalizedForOutput();
+    if (inv == null) return;
+    final app = context.read<AppProvider>();
+    final bytes = await PdfService.instance.generateInvoicePdf(inv, app.settings);
+    await ShareUtil.shareBytes(bytes, 'فاتورة_${inv.docNumber}.pdf',
+        text: 'فاتورة ${inv.docNumber}');
   }
 
   @override
   Widget build(BuildContext context) {
-    final title = widget.isReturn ? 'فاتورة مرتجع' : widget.isCash ? 'فاتورة نقدية' : 'فاتورة بيع';
+    final app = context.watch<AppProvider>();
+    final title = _isReturn ? 'فاتورة مرتجع' : 'فاتورة بيع';
+
     return Scaffold(
-      appBar: AppBar(
-        title: Text(title),
-        actions: [
-          if (widget.existingInvoice != null)
-            IconButton(icon: const Icon(Icons.delete_outline), onPressed: _confirmDelete),
-        ],
-      ),
-      body: Consumer<DataProvider>(
-        builder: (context, provider, child) {
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+      appBar: AppBar(title: Text(title)),
+      body: _saving
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(14),
               children: [
-                _buildHeaderRow(),
-                const SizedBox(height: 16),
-                _buildTypeSelector(),
-                const SizedBox(height: 16),
-                _buildCustomerSelector(provider),
-                const SizedBox(height: 16),
-                _buildProductSelector(provider),
-                const SizedBox(height: 16),
-                if (_items.isNotEmpty) _buildItemsList(),
-                const SizedBox(height: 16),
-                _buildTotalsCard(),
-                const SizedBox(height: 16),
-                _buildDiscountSection(),
-                const SizedBox(height: 16),
-                _buildTextField(controller: _notesCtrl, label: 'ملاحظات', icon: Icons.notes, maxLines: 3),
-                const SizedBox(height: 16),
-                _buildSignatureSection(),
-                const SizedBox(height: 24),
-                _buildActionButtons(),
-                const SizedBox(height: 40),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildHeaderRow() {
-    return Row(
-      children: [
-        Expanded(child: _buildTextField(controller: _invoiceNumberCtrl, label: 'رقم الفاتورة', icon: Icons.numbers)),
-        const SizedBox(width: 12),
-        Expanded(child: _buildTextField(controller: _dateCtrl, label: 'التاريخ', icon: Icons.calendar_today, readOnly: true, onTap: () => _pickDate(context))),
-      ],
-    );
-  }
-
-  Widget _buildTextField({required TextEditingController controller, required String label, required IconData icon, bool readOnly = false, int maxLines = 1, TextInputType? keyboardType, Function(String)? onChanged, VoidCallback? onTap}) {
-    return TextField(controller: controller, readOnly: readOnly, maxLines: maxLines, keyboardType: keyboardType, onChanged: onChanged, onTap: onTap,
-      decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon), border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)), filled: true));
-  }
-
-  Widget _buildTypeSelector() {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(16)),
-      child: Row(
-        children: [
-          Expanded(child: ChoiceChip(label: const Text('نقدي'), selected: widget.isCash, onSelected: (v) {})),
-          const SizedBox(width: 8),
-          Expanded(child: ChoiceChip(label: const Text('آجل'), selected: !widget.isCash && _selectedCustomer != null, onSelected: (v) {})),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCustomerSelector(DataProvider provider) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('اختيار العميل', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        if (_selectedCustomer != null)
-          Card(
-            child: ListTile(
-              leading: CircleAvatar(backgroundColor: Theme.of(context).colorScheme.primary, child: Text(_selectedCustomer!.name[0], style: const TextStyle(color: Colors.white))),
-              title: Text(_selectedCustomer!.name),
-              subtitle: Text('الرصيد: \${_selectedCustomer!.balance.toStringAsFixed(2)} ر.ي'),
-              trailing: IconButton(icon: const Icon(Icons.close), onPressed: () { setState(() { _selectedCustomer = null; _previousBalance = 0; _calculateTotals(); }); }),
-            ),
-          )
-        else
-          SizedBox(
-            height: 120,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              itemCount: provider.customers.length,
-              itemBuilder: (context, index) {
-                final customer = provider.customers[index];
-                return GestureDetector(
-                  onTap: () { setState(() { _selectedCustomer = customer; _previousBalance = customer.balance; _calculateTotals(); }); },
-                  child: Container(
-                    width: 140, margin: const EdgeInsets.only(left: 10), padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(16), border: Border.all(color: Theme.of(context).colorScheme.outline.withOpacity(0.3))),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        CircleAvatar(backgroundColor: Theme.of(context).colorScheme.primary, child: Text(customer.name[0], style: const TextStyle(color: Colors.white))),
-                        const SizedBox(height: 8),
-                        Text(customer.name, textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold)),
-                        Text('\${customer.balance.toStringAsFixed(0)} ر.ي', style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildProductSelector(DataProvider provider) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('المنتجات', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        GridView.builder(
-          shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, childAspectRatio: 1.4, crossAxisSpacing: 10, mainAxisSpacing: 10),
-          itemCount: provider.products.length,
-          itemBuilder: (context, index) {
-            final product = provider.products[index];
-            return GestureDetector(
-              onTap: () => _addProduct(product),
-              child: Container(
-                decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(16), border: Border.all(color: Theme.of(context).colorScheme.outline.withOpacity(0.2))),
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
+                // التاريخ ورقم الفاتورة (قابلان للتعديل)
+                Row(
                   children: [
-                    const Icon(Icons.shopping_bag_outlined, size: 32),
-                    const SizedBox(height: 6),
-                    Text(product.name, textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold)),
-                    Text('\${product.price.toStringAsFixed(0)} ر.ي', style: TextStyle(color: Theme.of(context).colorScheme.primary, fontWeight: FontWeight.bold)),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.calendar_today, size: 18),
+                        label: Text(Formatters.d(_date)),
+                        onPressed: () async {
+                          final picked = await showDatePicker(
+                            context: context,
+                            initialDate: _date,
+                            firstDate: DateTime(2020),
+                            lastDate: DateTime(2100),
+                          );
+                          if (picked != null) setState(() => _date = picked);
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        controller: _docNumberCtrl,
+                        decoration: const InputDecoration(labelText: 'رقم الفاتورة'),
+                      ),
+                    ),
                   ],
                 ),
-              ),
-            );
-          },
-        ),
-      ],
-    );
-  }
+                const SizedBox(height: 12),
 
-  void _addProduct(Product product) {
-    final existingIndex = _items.indexWhere((i) => i.productId == product.id);
-    if (existingIndex >= 0) {
-      setState(() { _items[existingIndex].quantity++; _items[existingIndex].total = _items[existingIndex].quantity * _items[existingIndex].price; });
-    } else {
-      setState(() { _items.add(InvoiceItem(productId: product.id!, productName: product.name, price: product.price, quantity: 1, total: product.price)); });
-    }
-    _calculateTotals();
-  }
+                // نقد / آجل
+                SegmentedButton<PaymentMode>(
+                  segments: const [
+                    ButtonSegment(
+                        value: PaymentMode.cash,
+                        label: Text('نقدًا'),
+                        icon: Icon(Icons.money)),
+                    ButtonSegment(
+                        value: PaymentMode.credit,
+                        label: Text('آجل'),
+                        icon: Icon(Icons.schedule)),
+                  ],
+                  selected: {_paymentMode},
+                  onSelectionChanged: (s) => setState(() => _paymentMode = s.first),
+                ),
+                const SizedBox(height: 16),
 
-  Widget _buildItemsList() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('الأصناف المضافة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        ..._items.asMap().entries.map((entry) {
-          final index = entry.key;
-          final item = entry.value;
-          return Card(
-            margin: const EdgeInsets.only(bottom: 8),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Row(
-                children: [
-                  Expanded(flex: 2, child: Text(item.productName, style: const TextStyle(fontWeight: FontWeight.bold))),
-                  Expanded(
+                // اختيار العميل
+                Text('العميل', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
+                InkWell(
+                  onTap: _pickCustomer,
+                  borderRadius: BorderRadius.circular(14),
+                  child: Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey.shade400),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
                     child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        _buildQtyButton(icon: Icons.remove, onTap: () => _updateQuantity(index, -1)),
-                        Container(margin: const EdgeInsets.symmetric(horizontal: 8), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                          decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(8)),
-                          child: Text('\${item.quantity}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        const Icon(Icons.person_pin_circle),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            _customer?.name ?? 'اضغط لاختيار العميل',
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
                         ),
-                        _buildQtyButton(icon: Icons.add, onTap: () => _updateQuantity(index, 1)),
+                        const Icon(Icons.chevron_left),
                       ],
                     ),
                   ),
-                  Expanded(child: Text('\${item.total.toStringAsFixed(0)}', textAlign: TextAlign.left, style: const TextStyle(fontWeight: FontWeight.bold))),
-                  IconButton(icon: Icon(Icons.delete_outline, color: Theme.of(context).colorScheme.error), onPressed: () { setState(() => _items.removeAt(index)); _calculateTotals(); }),
+                ),
+                const SizedBox(height: 18),
+
+                // إضافة المنتجات (بطاقات كبيرة)
+                Text('المنتجات', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
+                GridView.count(
+                  crossAxisCount: 3,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  mainAxisSpacing: 10,
+                  crossAxisSpacing: 10,
+                  childAspectRatio: 0.95,
+                  children: app.products
+                      .map((p) => BigCard(
+                            icon: Icons.inventory_2,
+                            title: p.name,
+                            subtitle: Formatters.money(p.price),
+                            selected: _items.containsKey(p.id),
+                            onTap: () => _addProduct(p),
+                          ))
+                      .toList(),
+                ),
+                const SizedBox(height: 16),
+
+                // قائمة الأصناف المختارة
+                if (_items.isNotEmpty) ...[
+                  Text('الأصناف المختارة',
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  ..._items.values.map((it) => Card(
+                        child: ListTile(
+                          title: Text(it.productName),
+                          subtitle: Text(
+                              '${Formatters.money(it.price)}  ×  ${it.quantity} = ${Formatters.money(it.total)}'),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              QuantitySelector(
+                                quantity: it.quantity,
+                                min: 1,
+                                onChanged: (v) {
+                                  setState(() => it.quantity = v);
+                                  _recalcBalance();
+                                },
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.red),
+                                onPressed: () {
+                                  setState(() => _items.remove(it.productId));
+                                  _recalcBalance();
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      )),
+                  const SizedBox(height: 10),
                 ],
-              ),
+
+                // الخصم
+                Text('الخصم (اختياري)',
+                    style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _discountPercentCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration:
+                            const InputDecoration(labelText: 'نسبة % '),
+                        onChanged: (_) => _recalcBalance(),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        controller: _discountAmountCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration:
+                            const InputDecoration(labelText: 'مبلغ ثابت'),
+                        onChanged: (_) => _recalcBalance(),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                // ملاحظات
+                TextField(
+                  controller: _notesCtrl,
+                  maxLines: 2,
+                  decoration: const InputDecoration(labelText: 'ملاحظات'),
+                ),
+                const SizedBox(height: 18),
+
+                // توقيع العميل
+                SignaturePadWidget(
+                  label: 'توقيع العميل',
+                  existingPath: _signaturePath,
+                  onSaved: (path) => setState(() => _signaturePath = path),
+                ),
+                const SizedBox(height: 18),
+
+                // الإجماليات + المديونية
+                Card(
+                  color: Theme.of(context).colorScheme.primaryContainer,
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      children: [
+                        _totalRow('الإجمالي الفرعي', Formatters.money(_subTotal)),
+                        _totalRow('الخصم', Formatters.money(_discountValue)),
+                        const Divider(),
+                        _totalRow('الإجمالي النهائي', Formatters.money(_grandTotal),
+                            bold: true),
+                        const Divider(),
+                        _totalRow('رصيد المديونية المتوقع بعد الحفظ',
+                            Formatters.money(_previewBalance),
+                            bold: true),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.save),
+                  label: const Text('حفظ'),
+                  onPressed: _save,
+                ),
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.visibility_outlined),
+                  label: const Text('معاينة الفاتورة'),
+                  onPressed: _previewInvoice,
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.print),
+                        label: const Text('طباعة 80مم'),
+                        onPressed: _printInvoice,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.picture_as_pdf),
+                        label: const Text('تحميل PDF'),
+                        onPressed: _downloadPdf,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.share),
+                  label: const Text('مشاركة'),
+                  onPressed: _sharePdf,
+                ),
+                const SizedBox(height: 24),
+              ],
             ),
-          );
-        }).toList(),
-      ],
     );
   }
 
-  Widget _buildQtyButton({required IconData icon, required VoidCallback onTap}) {
-    return Material(color: Theme.of(context).colorScheme.primary, borderRadius: BorderRadius.circular(8),
-      child: InkWell(onTap: onTap, borderRadius: BorderRadius.circular(8), child: Container(padding: const EdgeInsets.all(6), child: Icon(icon, color: Colors.white, size: 18))),
-    );
-  }
-
-  void _updateQuantity(int index, int delta) {
-    setState(() {
-      _items[index].quantity += delta;
-      if (_items[index].quantity <= 0) _items.removeAt(index);
-      else _items[index].total = _items[index].quantity * _items[index].price;
-    });
-    _calculateTotals();
-  }
-
-  Widget _buildTotalsCard() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            _buildTotalRow('الإجمالي الفرعي:', _subtotal),
-            if (_discountAmount > 0) _buildTotalRow('الخصم:', _discountAmount, isDiscount: true),
-            const Divider(),
-            _buildTotalRow('الإجمالي:', _total, isBold: true),
-            if (_selectedCustomer != null) ...[
-              const Divider(),
-              _buildTotalRow('الرصيد السابق:', _previousBalance),
-              _buildTotalRow('الرصيد الجديد:', _newBalance, isBold: true, color: _newBalance > 0 ? Colors.red : Colors.green),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTotalRow(String label, double value, {bool isBold = false, bool isDiscount = false, Color? color}) {
+  Widget _totalRow(String label, String value, {bool bold = false}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: TextStyle(fontSize: isBold ? 18 : 14, fontWeight: isBold ? FontWeight.bold : FontWeight.normal)),
-          Text('\${value.toStringAsFixed(2)} ر.ي', style: TextStyle(fontSize: isBold ? 18 : 14, fontWeight: isBold ? FontWeight.bold : FontWeight.normal, color: color ?? (isDiscount ? Colors.red : null))),
+          Text(label,
+              style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal)),
+          Text(value,
+              style: TextStyle(
+                  fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+                  fontSize: bold ? 16 : 14)),
         ],
       ),
     );
   }
+}
 
-  Widget _buildDiscountSection() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
+class _CustomerPickerSheet extends StatefulWidget {
+  final List<Customer> customers;
+  const _CustomerPickerSheet({required this.customers});
+
+  @override
+  State<_CustomerPickerSheet> createState() => _CustomerPickerSheetState();
+}
+
+class _CustomerPickerSheetState extends State<_CustomerPickerSheet> {
+  String _query = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = widget.customers
+        .where((c) => c.name.toLowerCase().contains(_query.toLowerCase()))
+        .toList();
+    return DraggableScrollableSheet(
+      initialChildSize: 0.75,
+      maxChildSize: 0.95,
+      builder: (context, controller) => Padding(
+        padding: const EdgeInsets.all(14),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('الخصم', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(child: _buildTextField(controller: _discountPercentCtrl, label: 'نسبة %', icon: Icons.percent, keyboardType: TextInputType.number,
-                  onChanged: (v) { _discountPercent = double.tryParse(v) ?? 0; _discountAmountCtrl.clear(); _calculateTotals(); })),
-                const SizedBox(width: 12),
-                Expanded(child: _buildTextField(controller: _discountAmountCtrl, label: 'مبلغ', icon: Icons.money_off, keyboardType: TextInputType.number,
-                  onChanged: (v) { _discountAmount = double.tryParse(v) ?? 0; _discountPercentCtrl.clear(); _discountPercent = 0; _calculateTotals(); })),
-              ],
+            TextField(
+              decoration: const InputDecoration(
+                  labelText: 'بحث عن عميل', prefixIcon: Icon(Icons.search)),
+              onChanged: (v) => setState(() => _query = v),
+            ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: GridView.builder(
+                controller: controller,
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 10,
+                  crossAxisSpacing: 10,
+                  childAspectRatio: 1.3,
+                ),
+                itemCount: filtered.length,
+                itemBuilder: (ctx, i) {
+                  final c = filtered[i];
+                  return BigCard(
+                    icon: Icons.person,
+                    title: c.name,
+                    subtitle: c.phone,
+                    onTap: () => Navigator.pop(context, c),
+                  );
+                },
+              ),
             ),
           ],
         ),
       ),
     );
-  }
-
-  Widget _buildSignatureSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('توقيع العميل', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        Container(decoration: BoxDecoration(color: Colors.white, border: Border.all(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(16)),
-          child: ClipRRect(borderRadius: BorderRadius.circular(16), child: Signature(controller: _signatureController, height: 150, backgroundColor: Colors.white)),
-        ),
-        const SizedBox(height: 8),
-        TextButton.icon(onPressed: () => _signatureController.clear(), icon: const Icon(Icons.clear), label: const Text('مسح التوقيع')),
-      ],
-    );
-  }
-
-  Widget _buildActionButtons() {
-    return Column(
-      children: [
-        SizedBox(width: double.infinity, height: 56,
-          child: FilledButton.icon(
-            onPressed: _saveInvoice, icon: const Icon(Icons.save), label: const Text('حفظ', style: TextStyle(fontSize: 18)),
-            style: FilledButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
-          ),
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(child: OutlinedButton.icon(onPressed: _items.isEmpty ? null : _printInvoice, icon: const Icon(Icons.print), label: const Text('طباعة'),
-              style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))))),
-            const SizedBox(width: 10),
-            Expanded(child: OutlinedButton.icon(onPressed: _items.isEmpty ? null : _downloadPDF, icon: const Icon(Icons.picture_as_pdf), label: const Text('PDF'),
-              style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))))),
-            const SizedBox(width: 10),
-            Expanded(child: OutlinedButton.icon(onPressed: _items.isEmpty ? null : _shareInvoice, icon: const Icon(Icons.share), label: const Text('مشاركة'),
-              style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))))),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Future<void> _pickDate(BuildContext context) async {
-    final picked = await showDatePicker(context: context, initialDate: _selectedDate, firstDate: DateTime(2020), lastDate: DateTime(2030));
-    if (picked != null) setState(() { _selectedDate = picked; _dateCtrl.text = DateFormat('yyyy/MM/dd').format(picked); });
-  }
-
-  Future<void> _saveInvoice() async {
-    if (_items.isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('يرجى إضافة منتجات'))); return; }
-    if (_selectedCustomer == null && !widget.isCash) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('يرجى اختيار عميل'))); return; }
-
-    final signature = await _signatureController.toPngBytes();
-    final signatureBase64 = signature != null ? base64Encode(signature) : null;
-
-    final invoice = Invoice(
-      id: widget.existingInvoice?.id,
-      invoiceNumber: _invoiceNumberCtrl.text,
-      customerId: _selectedCustomer?.id ?? 0,
-      customerName: _selectedCustomer?.name ?? 'عميل نقدي',
-      type: widget.isCash ? 'cash' : 'credit',
-      date: _selectedDate,
-      items: _items,
-      subtotal: _subtotal,
-      discountPercent: _discountPercent > 0 ? _discountPercent : null,
-      discountAmount: _discountAmount > 0 ? _discountAmount : null,
-      total: _total,
-      notes: _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
-      signature: signatureBase64,
-      previousBalance: _previousBalance,
-      newBalance: _newBalance,
-    );
-
-    final provider = Provider.of<DataProvider>(context, listen: false);
-    if (widget.existingInvoice != null) await provider.updateInvoice(invoice);
-    else await provider.addInvoice(invoice);
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم الحفظ بنجاح')));
-      Navigator.pop(context);
-    }
-  }
-
-  Future<void> _printInvoice() async {
-    final provider = Provider.of<DataProvider>(context, listen: false);
-    await PrintHelper.printInvoice(context, _buildInvoiceData(), provider.settings);
-  }
-
-  Future<void> _downloadPDF() async {
-    final provider = Provider.of<DataProvider>(context, listen: false);
-    await PdfHelper.generateInvoicePdf(context, _buildInvoiceData(), provider.settings);
-  }
-
-  Future<void> _shareInvoice() async {
-    final provider = Provider.of<DataProvider>(context, listen: false);
-    await PdfHelper.shareInvoicePdf(context, _buildInvoiceData(), provider.settings);
-  }
-
-  Invoice _buildInvoiceData() {
-    return Invoice(
-      invoiceNumber: _invoiceNumberCtrl.text, customerId: _selectedCustomer?.id ?? 0,
-      customerName: _selectedCustomer?.name ?? 'عميل نقدي', type: widget.isCash ? 'cash' : 'credit',
-      date: _selectedDate, items: _items, subtotal: _subtotal,
-      discountPercent: _discountPercent > 0 ? _discountPercent : null,
-      discountAmount: _discountAmount > 0 ? _discountAmount : null,
-      total: _total, notes: _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
-      previousBalance: _previousBalance, newBalance: _newBalance,
-    );
-  }
-
-  void _confirmDelete() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('تأكيد الحذف'), content: const Text('هل أنت متأكد من حذف هذه الفاتورة؟'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
-          FilledButton(
-            onPressed: () async {
-              await Provider.of<DataProvider>(context, listen: false).deleteInvoice(widget.existingInvoice!.id!);
-              if (mounted) { Navigator.pop(ctx); Navigator.pop(context); }
-            },
-            child: const Text('حذف'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  void dispose() {
-    _invoiceNumberCtrl.dispose(); _dateCtrl.dispose(); _discountPercentCtrl.dispose();
-    _discountAmountCtrl.dispose(); _notesCtrl.dispose(); _signatureController.dispose();
-    super.dispose();
   }
 }

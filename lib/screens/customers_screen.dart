@@ -1,144 +1,141 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../models/customer.dart';
-import '../providers/data_provider.dart';
-import 'customer_detail_screen.dart';
+import 'package:uuid/uuid.dart';
 
-class CustomersScreen extends StatefulWidget {
+import '../models/customer.dart';
+import '../models/invoice.dart';
+import '../providers/app_provider.dart';
+import '../widgets/customer_card.dart';
+import 'customer_detail_screen.dart';
+import 'invoice_screen.dart';
+import 'receipt_screen.dart';
+
+/// إدارة العملاء: إضافة/تعديل/حذف + بطاقة عميل غنية (رصيد، حالة، آخر نشاط،
+/// إجراءات سريعة) + دخول لصفحة العميل الكاملة
+class CustomersScreen extends StatelessWidget {
   const CustomersScreen({super.key});
 
-  @override
-  State<CustomersScreen> createState() => _CustomersScreenState();
-}
+  Future<void> _editCustomer(BuildContext context, Customer? existing) async {
+    final nameCtrl = TextEditingController(text: existing?.name ?? '');
+    final phoneCtrl = TextEditingController(text: existing?.phone ?? '');
+    final addressCtrl = TextEditingController(text: existing?.address ?? '');
+    final openingCtrl =
+        TextEditingController(text: existing?.openingBalance.toString() ?? '0');
+    final creditLimitCtrl =
+        TextEditingController(text: existing?.creditLimit.toString() ?? '0');
+    bool isActive = existing?.isActive ?? true;
 
-class _CustomersScreenState extends State<CustomersScreen> {
-  final _searchCtrl = TextEditingController();
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: Text(existing == null ? 'إضافة عميل' : 'تعديل عميل'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                    controller: nameCtrl,
+                    decoration: const InputDecoration(labelText: 'اسم العميل')),
+                TextField(
+                    controller: phoneCtrl,
+                    decoration: const InputDecoration(labelText: 'رقم الهاتف')),
+                TextField(
+                    controller: addressCtrl,
+                    decoration: const InputDecoration(labelText: 'العنوان')),
+                TextField(
+                  controller: openingCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'الرصيد الافتتاحي'),
+                ),
+                TextField(
+                  controller: creditLimitCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration:
+                      const InputDecoration(labelText: 'الحد الائتماني (اختياري)'),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('عميل نشط'),
+                  value: isActive,
+                  onChanged: (v) => setState(() => isActive = v),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true), child: const Text('حفظ')),
+          ],
+        ),
+      ),
+    );
+
+    if (result == true && nameCtrl.text.trim().isNotEmpty) {
+      final c = Customer(
+        id: existing?.id ?? const Uuid().v4(),
+        name: nameCtrl.text.trim(),
+        phone: phoneCtrl.text.trim(),
+        address: addressCtrl.text.trim(),
+        openingBalance: double.tryParse(openingCtrl.text) ?? 0,
+        creditLimit: double.tryParse(creditLimitCtrl.text) ?? 0,
+        isActive: isActive,
+        isPinned: existing?.isPinned ?? false,
+        notes: existing?.notes ?? '',
+      );
+      if (context.mounted) {
+        await context.read<AppProvider>().saveCustomer(c);
+      }
+    }
+  }
+
+  Future<void> _openInvoice(BuildContext context, Customer c, InvoiceKind kind) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+          builder: (_) => InvoiceScreen(kind: kind, initialCustomer: c)),
+    );
+  }
+
+  Future<void> _openReceipt(BuildContext context, Customer c) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => ReceiptScreen(initialCustomer: c)),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    final app = context.watch<AppProvider>();
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('العملاء'),
-        actions: [
-          IconButton(icon: const Icon(Icons.person_add), onPressed: () => _showCustomerDialog()),
-        ],
+      appBar: AppBar(title: const Text('العملاء')),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => _editCustomer(context, null),
+        child: const Icon(Icons.add),
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: TextField(
-              controller: _searchCtrl,
-              decoration: InputDecoration(hintText: 'بحث عن عميل...', prefixIcon: const Icon(Icons.search), border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)), filled: true),
-              onChanged: (v) => setState(() {}),
-            ),
-          ),
-          Expanded(
-            child: Consumer<DataProvider>(
-              builder: (context, provider, child) {
-                final customers = provider.customers.where((c) => c.name.toLowerCase().contains(_searchCtrl.text.toLowerCase()) || c.phone.contains(_searchCtrl.text)).toList();
-                if (customers.isEmpty) return const Center(child: Text('لا يوجد عملاء'));
-                return ListView.builder(
-                  padding: const EdgeInsets.all(12),
-                  itemCount: customers.length,
-                  itemBuilder: (context, index) {
-                    final customer = customers[index];
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 10),
-                      child: ListTile(
-                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => CustomerDetailScreen(customer: customer))),
-                        leading: CircleAvatar(backgroundColor: customer.balance > 0 ? Colors.red : Colors.green, child: Text(customer.name[0], style: const TextStyle(color: Colors.white))),
-                        title: Text(customer.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Text(customer.phone),
-                        trailing: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text('\${customer.balance.toStringAsFixed(0)} ر.ي', style: TextStyle(color: customer.balance > 0 ? Colors.red : Colors.green, fontWeight: FontWeight.bold, fontSize: 16)),
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(icon: const Icon(Icons.edit, size: 20), onPressed: () => _showCustomerDialog(customer: customer)),
-                                IconButton(icon: Icon(Icons.delete, size: 20, color: Theme.of(context).colorScheme.error), onPressed: () => _confirmDelete(customer)),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
+      body: app.customers.isEmpty
+          ? const Center(child: Text('لا يوجد عملاء بعد — اضغط + للإضافة'))
+          : ListView.builder(
+              padding: const EdgeInsets.only(top: 6, bottom: 80),
+              itemCount: app.customers.length,
+              itemBuilder: (ctx, i) {
+                final c = app.customers[i];
+                return CustomerCard(
+                  customer: c,
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => CustomerDetailScreen(customer: c)),
+                  ),
+                  onEdit: () => _editCustomer(context, c),
+                  onDelete: () => app.deleteCustomer(c.id),
+                  onTogglePin: () => app.togglePinCustomer(c.id),
+                  onNewInvoice: () => _openInvoice(context, c, InvoiceKind.sale),
+                  onNewReceipt: () => _openReceipt(context, c),
                 );
               },
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showCustomerDialog({Customer? customer}) {
-    final nameCtrl = TextEditingController(text: customer?.name);
-    final phoneCtrl = TextEditingController(text: customer?.phone);
-    final addressCtrl = TextEditingController(text: customer?.address);
-    final notesCtrl = TextEditingController(text: customer?.notes);
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(customer == null ? 'إضافة عميل' : 'تعديل عميل'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'الاسم', prefixIcon: Icon(Icons.person))),
-              const SizedBox(height: 12),
-              TextField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'الهاتف', prefixIcon: Icon(Icons.phone)), keyboardType: TextInputType.phone),
-              const SizedBox(height: 12),
-              TextField(controller: addressCtrl, decoration: const InputDecoration(labelText: 'العنوان', prefixIcon: Icon(Icons.location_on))),
-              const SizedBox(height: 12),
-              TextField(controller: notesCtrl, decoration: const InputDecoration(labelText: 'ملاحظات', prefixIcon: Icon(Icons.notes)), maxLines: 2),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
-          FilledButton(
-            onPressed: () async {
-              if (nameCtrl.text.isEmpty || phoneCtrl.text.isEmpty) return;
-              final newCustomer = Customer(
-                id: customer?.id, name: nameCtrl.text, phone: phoneCtrl.text,
-                address: addressCtrl.text.isEmpty ? null : addressCtrl.text,
-                balance: customer?.balance ?? 0, notes: notesCtrl.text.isEmpty ? null : notesCtrl.text,
-              );
-              final provider = Provider.of<DataProvider>(context, listen: false);
-              if (customer == null) await provider.addCustomer(newCustomer);
-              else await provider.updateCustomer(newCustomer);
-              if (mounted) Navigator.pop(ctx);
-            },
-            child: Text(customer == null ? 'إضافة' : 'حفظ'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _confirmDelete(Customer customer) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('تأكيد الحذف'),
-        content: Text('هل أنت متأكد من حذف \${customer.name}؟'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
-          FilledButton(
-            onPressed: () async {
-              await Provider.of<DataProvider>(context, listen: false).deleteCustomer(customer.id!);
-              if (mounted) Navigator.pop(ctx);
-            },
-            child: const Text('حذف'),
-          ),
-        ],
-      ),
     );
   }
 }

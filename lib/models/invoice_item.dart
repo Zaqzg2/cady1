@@ -1,43 +1,29 @@
 class InvoiceItem {
-  int? id;
-  int? invoiceId;
-  int productId;
-  String productName;
-  double price;
+  final String productId;
+  final String productName;
+  final double price;
   int quantity;
-  double total;
 
   InvoiceItem({
-    this.id,
-    this.invoiceId,
     required this.productId,
     required this.productName,
     required this.price,
-    required this.quantity,
-    this.total = 0.0,
+    this.quantity = 1,
   });
 
-  Map<String, dynamic> toMap() {
-    return {
-      'id': id,
-      'invoiceId': invoiceId,
-      'productId': productId,
-      'productName': productName,
-      'price': price,
-      'quantity': quantity,
-      'total': total,
-    };
-  }
+  double get total => price * quantity;
 
-  factory InvoiceItem.fromMap(Map<String, dynamic> map) {
-    return InvoiceItem(
-      id: map['id'],
-      invoiceId: map['invoiceId'],
-      productId: map['productId'],
-      productName: map['productName'],
-      price: (map['price'] as num?)?.toDouble() ?? 0.0,
-      quantity: map['quantity'],
-      total: (map['total'] as num?)?.toDouble() ?? 0.0,
-    );
-  }
+  Map<String, dynamic> toMap() => {
+        'productId': productId,
+        'productName': productName,
+        'price': price,
+        'quantity': quantity,
+      };
+
+  factory InvoiceItem.fromMap(Map<String, dynamic> m) => InvoiceItem(
+        productId: m['productId'] as String,
+        productName: m['productName'] as String,
+        price: (m['price'] as num).toDouble(),
+        quantity: (m['quantity'] as num).toInt(),
+      );
 }
