@@ -1,0 +1,127 @@
+# بناء تطبيق محلل المخزون بدون كمبيوتر محلي
+# يعمل على GitHub Actions ويفعّل عند الدفع أو يدوياً
+
+name: Build Inventory Analyzer
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:  # تشغيل يدوي من تبويب Actions
+
+env:
+  FLUTTER_VERSION: "3.24.0"
+
+jobs:
+  # ─────────────────────────────────────────────
+  # 1) بناء APK لأندرويد
+  # ─────────────────────────────────────────────
+  build-android:
+    name: بناء APK (Android)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      - name: Generate platform folders (android/ios/web)
+        run: flutter create . --project-name inventory_analyzer --org com.inventory.analyzer --platforms android,web
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Analyze (اختياري)
+        run: flutter analyze --no-fatal-infos || true
+
+      - name: Build APK (release)
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 14
+
+  # ─────────────────────────────────────────────
+  # 2) بناء نسخة الويب
+  # ─────────────────────────────────────────────
+  build-web:
+    name: بناء Web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Generate platform folders
+        run: flutter create . --project-name inventory_analyzer --org com.inventory.analyzer --platforms android,web
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build Web
+        run: flutter build web --release --base-href "/"
+
+      - name: Upload Web build
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: build/web
+          retention-days: 14
+
+  # ─────────────────────────────────────────────
+  # 3) (اختياري) نشر الويب على GitHub Pages
+  # ─────────────────────────────────────────────
+  deploy-pages:
+    name: نشر على GitHub Pages
+    needs: build-web
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download web artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: web
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+        continue-on-error: true  # لا يفشل البناء إذا لم تُفعّل Pages بعد

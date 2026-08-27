@@ -1,128 +1,69 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../services/data_repository.dart';
+import '../theme/app_theme.dart';
 
-import '../providers/app_provider.dart';
-import '../models/company_settings.dart';
-import '../services/auth_service.dart';
-import '../widgets/settings_tile.dart';
-import 'settings_company_screen.dart';
-import 'settings_printing_screen.dart';
-import 'settings_appearance_screen.dart';
-import 'settings_privacy_screen.dart';
-import 'settings_data_screen.dart';
-import 'settings_sync_screen.dart';
-
-/// الشاشة الرئيسية للإعدادات — قائمة أقسام بنمط iOS/Android الرسمي:
-/// كل قسم سطر واحد بأيقونة + عنوان + سطر فرعي يلخّص الحالة + سهم يفتح
-/// شاشة مستقلة كاملة لذلك القسم فقط
-class SettingsScreen extends StatefulWidget {
+class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
-}
-
-class _SettingsScreenState extends State<SettingsScreen> {
-  bool _passwordEnabled = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadAuthState();
-  }
-
-  Future<void> _loadAuthState() async {
-    final set = await AuthService.instance.isPasswordSet();
-    if (mounted) setState(() => _passwordEnabled = set);
-  }
-
-  Future<void> _open(Widget screen) async {
-    await Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
-    _loadAuthState();
-    if (mounted) setState(() {});
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final app = context.watch<AppProvider>();
-    final s = app.settings;
-
-    final companySubtitle = s.companyName.trim().isEmpty
-        ? 'أضف بيانات شركتك ومندوبك'
-        : '${s.companyName}${s.repName.isNotEmpty ? ' • ${s.repName}' : ''}';
-
-    final printerSubtitle = s.printerAddress != null
-        ? 'الطابعة: ${s.printerName ?? 'غير معروفة'} متصلة'
-        : 'لا توجد طابعة متصلة';
-
-    final appearanceSubtitle = switch (s.themeMode) {
-      AppThemeMode.system => 'تلقائي حسب النظام',
-      AppThemeMode.dark => 'داكن دائمًا',
-      AppThemeMode.light => 'فاتح دائمًا',
-    };
-
-    final privacySubtitle = _passwordEnabled ? 'محمي بكلمة مرور' : 'بدون حماية';
-
-    final backupSubtitle = switch (s.autoBackupFrequency) {
-      AutoBackupFrequency.daily => 'نسخ تلقائي يومي',
-      AutoBackupFrequency.weekly => 'نسخ تلقائي أسبوعي',
-      AutoBackupFrequency.off => 'النسخ الاحتياطي والبيانات',
-    };
+    final repo = context.watch<DataRepository>();
 
     return Scaffold(
       appBar: AppBar(title: const Text('الإعدادات')),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
         children: [
-          SettingsSection(
-            children: [
-              SettingsTile(
-                icon: Icons.store_outlined,
-                iconColor: Colors.teal,
-                title: 'بيانات الشركة والمندوب',
-                subtitle: companySubtitle,
-                onTap: () => _open(const SettingsCompanyScreen()),
-              ),
-              SettingsTile(
-                icon: Icons.print_outlined,
-                iconColor: Colors.indigo,
-                title: 'الطباعة والفاتورة',
-                subtitle: printerSubtitle,
-                onTap: () => _open(const SettingsPrintingScreen()),
-              ),
-              SettingsTile(
-                icon: Icons.palette_outlined,
-                iconColor: Colors.deepOrange,
-                title: 'المظهر',
-                subtitle: appearanceSubtitle,
-                onTap: () => _open(const SettingsAppearanceScreen()),
-              ),
-              SettingsTile(
-                icon: Icons.lock_outline,
-                iconColor: Colors.blueGrey,
-                title: 'الخصوصية والأمان',
-                subtitle: privacySubtitle,
-                onTap: () => _open(const SettingsPrivacyScreen()),
-              ),
-              SettingsTile(
-                icon: Icons.backup_outlined,
-                iconColor: Colors.green,
-                title: 'البيانات والنسخ الاحتياطي',
-                subtitle: backupSubtitle,
-                onTap: () => _open(const SettingsDataScreen()),
-              ),
-              SettingsTile(
-                icon: Icons.sync_outlined,
-                iconColor: Colors.teal,
-                title: 'المزامنة ونوع المستخدم',
-                subtitle: s.isManager
-                    ? 'وضع المدير'
-                    : (s.repCode.isNotEmpty
-                        ? 'مندوب رقم ${s.repCode}'
-                        : 'وضع المندوب — لم يُعيَّن رقم المندوب بعد'),
-                onTap: () => _open(const SettingsSyncScreen()),
-              ),
-            ],
+          const ListTile(
+            leading: Icon(Icons.info_outline, color: AppTheme.primary),
+            title: Text('محلل المخزون والتقارير الذكي'),
+            subtitle: Text('الإصدار 1.0.0'),
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.inventory_2_outlined),
+            title: const Text('عدد الأصناف'),
+            trailing: Text('${repo.products.length}', style: const TextStyle(fontWeight: FontWeight.bold)),
+          ),
+          ListTile(
+            leading: const Icon(Icons.store_outlined),
+            title: const Text('عدد الفروع'),
+            trailing: Text('${repo.branches.length}', style: const TextStyle(fontWeight: FontWeight.bold)),
+          ),
+          ListTile(
+            leading: const Icon(Icons.upload_file_outlined),
+            title: const Text('عمليات الاستيراد'),
+            trailing: Text('${repo.imports.length}', style: const TextStyle(fontWeight: FontWeight.bold)),
+          ),
+          const Divider(),
+          const ListTile(
+            leading: Icon(Icons.cloud_outlined),
+            title: Text('Firebase'),
+            subtitle: Text('جاهز للربط مستقبلاً — التطبيق يعمل أوفلاين حالياً'),
+          ),
+          const ListTile(
+            leading: Icon(Icons.security_outlined),
+            title: Text('الأمان والجودة'),
+            subtitle: Text('لا تُحذف البيانات الأصلية • سجل التعديلات • مصدر كل قيمة'),
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.delete_outline, color: AppTheme.danger),
+            title: const Text('مسح البيانات التجريبية'),
+            subtitle: const Text('لإعادة التعيين (تجريبي)'),
+            onTap: () {
+              showDialog(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Text('تأكيد'),
+                  content: const Text('هذه النسخة التجريبية تستخدم بيانات في الذاكرة. أعد تشغيل التطبيق لإعادة التحميل.'),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('حسناً')),
+                  ],
+                ),
+              );
+            },
           ),
         ],
       ),

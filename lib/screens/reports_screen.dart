@@ -1,144 +1,160 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
+import '../services/data_repository.dart';
+import '../theme/app_theme.dart';
+import '../widgets/section_header.dart';
 
-import '../models/invoice.dart';
-import '../providers/app_provider.dart';
-import '../services/db_service.dart';
-import '../utils/formatters.dart';
-
-/// تقارير مختصرة: إجمالي المبيعات، المرتجعات، التحصيلات، وإجمالي
-/// مديونية العملاء — لفترة محددة
-class ReportsScreen extends StatefulWidget {
+class ReportsScreen extends StatelessWidget {
   const ReportsScreen({super.key});
 
   @override
-  State<ReportsScreen> createState() => _ReportsScreenState();
-}
-
-class _ReportsScreenState extends State<ReportsScreen> {
-  DateTime _from = DateTime.now().subtract(const Duration(days: 30));
-  DateTime _to = DateTime.now();
-
-  Future<Map<String, double>> _computeSummary() async {
-    final invoices = await DbService.instance.getInvoices();
-    final receipts = await DbService.instance.getReceipts();
-
-    final filteredInv = invoices.where((i) =>
-        !i.date.isBefore(_from) && !i.date.isAfter(_to.add(const Duration(days: 1))));
-    final filteredRec = receipts.where((r) =>
-        !r.date.isBefore(_from) && !r.date.isAfter(_to.add(const Duration(days: 1))));
-
-    double sales = 0, returns = 0, collected = 0;
-    for (final i in filteredInv) {
-      if (i.kind == InvoiceKind.sale) {
-        sales += i.grandTotal;
-      } else {
-        returns += i.grandTotal;
-      }
-    }
-    for (final r in filteredRec) {
-      collected += r.amount;
-    }
-
-    return {
-      'sales': sales,
-      'returns': returns,
-      'collected': collected,
-      'net': sales - returns,
-    };
-  }
-
-  Future<double> _totalOutstanding() async {
-    final app = context.read<AppProvider>();
-    double total = 0;
-    for (final c in app.customers) {
-      total += await app.getCustomerBalance(c.id);
-    }
-    return total;
-  }
-
-  @override
   Widget build(BuildContext context) {
+    final repo = context.watch<DataRepository>();
+    final stats = repo.computeStats();
+    final dateFmt = DateFormat('yyyy/MM/dd', 'ar');
+
     return Scaffold(
       appBar: AppBar(title: const Text('التقارير')),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
         children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('تقرير تحليل المخزون', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  Text('التاريخ: ${dateFmt.format(DateTime.now())}', style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+                  if (stats.lastImportSource != null)
+                    Text('مصدر البيانات: ${stats.lastImportSource}', style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+                  const Divider(height: 24),
+                  const Text('ملخص تنفيذي', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                  const SizedBox(height: 8),
+                  Text(
+                    'يبلغ إجمالي الأصناف ${stats.totalProducts} صنفًا بقيمة مخزون إجمالية ${stats.totalInventoryValue.toStringAsFixed(0)} ر.س موزعة على ${stats.totalBranches} فروع. '
+                    'يوجد ${stats.expiredCount} أصناف منتهية الصلاحية و${stats.nearExpiryCount} أصناف قريبة من الانتهاء، بالإضافة إلى ${stats.lowStockCount} أصناف منخفضة المخزون.',
+                    style: const TextStyle(fontSize: 13, height: 1.5),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+          const SectionHeader(title: 'مؤشرات الأداء (KPI)'),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                children: [
+                  _KpiRow('إجمالي الأصناف', '${stats.totalProducts}'),
+                  _KpiRow('إجمالي الكميات', stats.totalQuantity.toStringAsFixed(0)),
+                  _KpiRow('قيمة المخزون', '${stats.totalInventoryValue.toStringAsFixed(0)} ر.س'),
+                  _KpiRow('منخفض المخزون', '${stats.lowStockCount}'),
+                  _KpiRow('منتهي الصلاحية', '${stats.expiredCount}'),
+                  _KpiRow('قريب الانتهاء', '${stats.nearExpiryCount}'),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+          const SectionHeader(title: 'أعلى الأصناف'),
+          Card(
+            child: Column(
+              children: stats.topByQuantity.take(5).map((i) {
+                return ListTile(
+                  dense: true,
+                  title: Text(i.productName, style: const TextStyle(fontSize: 13)),
+                  trailing: Text(i.quantity.toStringAsFixed(0), style: const TextStyle(fontWeight: FontWeight.bold)),
+                );
+              }).toList(),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+          const SectionHeader(title: 'توصيات', color: AppTheme.primary),
+          Card(
+            color: AppTheme.primary.withOpacity(0.06),
+            child: const Padding(
+              padding: EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('• مراجعة الأصناف المنتهية والتخلص منها أو إرجاعها للمورد.'),
+                  SizedBox(height: 6),
+                  Text('• إعادة طلب الأصناف منخفضة المخزون فورًا.'),
+                  SizedBox(height: 6),
+                  Text('• مراقبة الأصناف القريبة من الانتهاء وتفعيل عروض تصريف.'),
+                  SizedBox(height: 6),
+                  Text('• مقارنة توزيع المخزون بين الفروع لتحسين التوزيع.'),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 20),
           Row(
             children: [
               Expanded(
-                child: OutlinedButton.icon(
-                  icon: const Icon(Icons.date_range, size: 18),
-                  label: Text('من: ${Formatters.d(_from)}'),
-                  onPressed: () async {
-                    final picked = await showDatePicker(
-                        context: context,
-                        initialDate: _from,
-                        firstDate: DateTime(2020),
-                        lastDate: DateTime(2100));
-                    if (picked != null) setState(() => _from = picked);
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('تصدير PDF — سيتم تفعيله مع حزمة printing')),
+                    );
                   },
+                  icon: const Icon(Icons.picture_as_pdf),
+                  label: const Text('تصدير PDF'),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 10),
               Expanded(
                 child: OutlinedButton.icon(
-                  icon: const Icon(Icons.date_range, size: 18),
-                  label: Text('إلى: ${Formatters.d(_to)}'),
-                  onPressed: () async {
-                    final picked = await showDatePicker(
-                        context: context,
-                        initialDate: _to,
-                        firstDate: DateTime(2020),
-                        lastDate: DateTime(2100));
-                    if (picked != null) setState(() => _to = picked);
+                  onPressed: () {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('تصدير Excel — سيتم تفعيله مع حزمة excel')),
+                    );
                   },
+                  icon: const Icon(Icons.table_chart),
+                  label: const Text('تصدير Excel'),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 16),
-          FutureBuilder<Map<String, double>>(
-            future: _computeSummary(),
-            builder: (context, snap) {
-              if (!snap.hasData) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              final d = snap.data!;
-              return Column(
-                children: [
-                  _reportCard('إجمالي المبيعات', d['sales']!, Colors.green, Icons.point_of_sale),
-                  _reportCard('إجمالي المرتجعات', d['returns']!, Colors.red, Icons.assignment_return),
-                  _reportCard('إجمالي التحصيلات', d['collected']!, Colors.blue, Icons.payments),
-                  _reportCard('صافي المبيعات', d['net']!, Colors.teal, Icons.trending_up),
-                ],
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('مشاركة التقرير — share_plus')),
               );
             },
-          ),
-          const SizedBox(height: 8),
-          FutureBuilder<double>(
-            future: _totalOutstanding(),
-            builder: (context, snap) {
-              if (!snap.hasData) return const SizedBox();
-              return _reportCard('إجمالي مديونية جميع العملاء (حاليًا)',
-                  snap.data!, Colors.orange, Icons.account_balance_wallet);
-            },
+            icon: const Icon(Icons.share),
+            label: const Text('مشاركة التقرير'),
           ),
         ],
       ),
     );
   }
+}
 
-  Widget _reportCard(String title, double value, Color color, IconData icon) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 10),
-      child: ListTile(
-        leading: CircleAvatar(backgroundColor: color.withOpacity(0.15), child: Icon(icon, color: color)),
-        title: Text(title),
-        trailing: Text(
-          Formatters.money(value),
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: color),
-        ),
+class _KpiRow extends StatelessWidget {
+  final String label;
+  final String value;
+  const _KpiRow(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.w700)),
+        ],
       ),
     );
   }
