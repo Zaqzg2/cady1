@@ -1,0 +1,115 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:provider/provider.dart';
+
+import 'providers/import_session_provider.dart';
+import 'providers/inventory_provider.dart';
+import 'providers/settings_provider.dart';
+import 'screens/home_shell.dart';
+import 'services/storage_service.dart';
+import 'theme/app_theme.dart';
+
+class InventoryAnalyzerApp extends StatefulWidget {
+  final String? storageInitError;
+  const InventoryAnalyzerApp({super.key, this.storageInitError});
+
+  @override
+  State<InventoryAnalyzerApp> createState() => _InventoryAnalyzerAppState();
+}
+
+class _InventoryAnalyzerAppState extends State<InventoryAnalyzerApp> {
+  late String? _storageError = widget.storageInitError;
+  bool _retrying = false;
+
+  Future<void> _retryInit() async {
+    setState(() => _retrying = true);
+    try {
+      await StorageService.instance.init();
+      setState(() => _storageError = null);
+    } catch (e) {
+      setState(() => _storageError = e.toString());
+    } finally {
+      setState(() => _retrying = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'محلل المخزون والتقارير الذكي',
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
+      locale: const Locale('ar'),
+      supportedLocales: const [Locale('ar')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      builder: (context, child) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: child ?? const SizedBox.shrink(),
+      ),
+      home: _storageError != null
+          ? _StorageErrorScreen(
+              error: _storageError!,
+              retrying: _retrying,
+              onRetry: _retryInit,
+            )
+          : MultiProvider(
+              providers: [
+                ChangeNotifierProvider(create: (_) => InventoryProvider()..load()),
+                ChangeNotifierProvider(create: (_) => ImportSessionProvider()),
+                ChangeNotifierProvider(create: (_) => SettingsProvider()..load()),
+              ],
+              child: const HomeShell(),
+            ),
+    );
+  }
+}
+
+/// شاشة خطأ صريحة بدل تعليق صامت — التطبيق المباشر لدرس "الشاشة البيضاء
+/// المعلَّقة للأبد" في دليل الأعطال.
+class _StorageErrorScreen extends StatelessWidget {
+  final String error;
+  final bool retrying;
+  final VoidCallback onRetry;
+  const _StorageErrorScreen({
+    required this.error,
+    required this.retrying,
+    required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.storage_rounded, size: 56, color: Colors.redAccent),
+              const SizedBox(height: 16),
+              const Text('تعذّرت تهيئة التخزين المحلي',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center),
+              const SizedBox(height: 8),
+              Text(error, textAlign: TextAlign.center, style: const TextStyle(color: Colors.grey)),
+              const SizedBox(height: 24),
+              FilledButton.icon(
+                onPressed: retrying ? null : onRetry,
+                icon: retrying
+                    ? const SizedBox(
+                        width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.refresh),
+                label: const Text('إعادة المحاولة'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

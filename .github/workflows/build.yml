@@ -1,154 +1,107 @@
-# بناء تطبيق محلل المخزون بدون كمبيوتر محلي
-# يتضمن إصلاحات دليل أعطال Gradle (compileSdk / Kotlin / --no-pub)
-
-name: Build Inventory Analyzer
+name: Build Flutter App
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
-    branches: [main, master]
+    branches: [main]
   workflow_dispatch:
 
-env:
-  FLUTTER_VERSION: "3.24.5"
-
 jobs:
-  # ─────────────────────────────────────────────
-  # 1) بناء APK لأندرويد
-  # ─────────────────────────────────────────────
-  build-android:
-    name: بناء APK (Android)
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: "temurin"
-          java-version: "17"
-
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
-          cache: true
 
-      - name: Flutter doctor
-        run: flutter doctor -v
-
-      - name: Generate platform folders (android/web)
-        run: flutter create . --project-name inventory_analyzer --org com.inventory.analyzer --platforms android,web
-
-      # صمام أمان رسمي لـ AGP 9 / Built-in Kotlin (خطأ kotlin())
-      - name: Fix gradle.properties (builtInKotlin)
-        run: |
-          PROP=android/gradle.properties
-          touch "$PROP"
-          grep -q 'android.builtInKotlin' "$PROP" || echo 'android.builtInKotlin=false' >> "$PROP"
-          grep -q 'android.newDsl' "$PROP" || echo 'android.newDsl=false' >> "$PROP"
-          echo "----- android/gradle.properties -----"
-          cat "$PROP"
-
-      - name: Get dependencies
+      - name: Flutter pub get
         run: flutter pub get
 
-      # ترقيع compileSdk=36 في كل الحزم قبل Gradle (حل تعارض file_picker وغيره)
-      - name: Patch compileSdk to 36
-        run: |
-          python3 tool/patch_compile_sdk.py
-          echo "----- patch report -----"
-          cat compile_sdk_patch_report.txt || true
+      - name: Static analysis
+        run: flutter analyze
+        # لا نوقف البناء بسبب تحذيرات التحليل الأولى — فقط أخطاء الترجمة الحقيقية
+        continue-on-error: true
 
-      - name: Upload compileSdk patch report
+      # القسم 3 من دليل الأعطال: بعض الحزم (خصوصًا ما يعتمد على
+      # flutter_plugin_android_lifecycle مثل file_picker/image_picker) تتطلب
+      # compileSdk >= 36، وقد تكون القيمة الافتراضية المضمّنة في Flutter أقل.
+      - name: Patch compileSdk in pub-cache dependencies
+        run: python3 tool/patch_compile_sdk.py
+
+      - name: Upload compileSdk patch log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: compile-sdk-patch-report
-          path: compile_sdk_patch_report.txt
+          name: compile-sdk-patch-log
+          path: compile_sdk_patch_log.txt
           if-no-files-found: ignore
-          retention-days: 7
 
-      - name: Analyze (اختياري)
-        run: flutter analyze --no-fatal-infos || true
+      # القسم 6: يُنشأ فقط إذا كانت أسرار التوقيع مضبوطة في المستودع
+      # (Settings → Secrets and variables → Actions). بدونها يُبنى APK
+      # بتوقيع debug تلقائيًا (صالح للتجربة فقط، غير صالح للنشر).
+      - name: Prepare signing (if configured)
+        if: ${{ env.KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/keystore.jks
+          cat > android/key.properties <<EOF
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=keystore.jks
+          EOF
+          # تذكير القسم 6: storePassword وkeyPassword يجب أن تكونا متطابقتين
+          # حرفيًا (نوع الكيستور الافتراضي PKCS12 منذ Java 9+ لا يدعم خلافه)،
+          # وإلا فشل التوقيع لاحقًا بخطأ BadPaddingException غامض الصلة
+          # ظاهريًا بكلمات المرور. تحقّق من تطابق السرّين نصيًا في إعدادات
+          # GitHub قبل أول بناء، فـ keytool -keypasswd لا يدعم PKCS12 إطلاقًا
+          # ولا يصلح كاختبار بديل.
 
-      # --no-pub يمنع pub من إعادة تحميل الحزم وإبطال الترقيع
-      - name: Build APK (release)
+      - name: Build APK
         run: flutter build apk --release --no-pub
+
+      - name: Build Web
+        run: flutter build web --release --no-pub
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk
+          name: app-release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
-          retention-days: 14
-
-  # ─────────────────────────────────────────────
-  # 2) بناء نسخة الويب
-  # ─────────────────────────────────────────────
-  build-web:
-    name: بناء Web
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
-      - name: Generate platform folders
-        run: flutter create . --project-name inventory_analyzer --org com.inventory.analyzer --platforms android,web
-
-      - name: Get dependencies
-        run: flutter pub get
-
-      - name: Build Web
-        run: flutter build web --release --base-href "/"
 
       - name: Upload Web build
         uses: actions/upload-artifact@v4
         with:
           name: web-build
           path: build/web
-          retention-days: 14
 
-  # ─────────────────────────────────────────────
-  # 3) (اختياري) نشر الويب على GitHub Pages
-  # ─────────────────────────────────────────────
-  deploy-pages:
-    name: نشر على GitHub Pages
-    needs: build-web
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Download web artifact
-        uses: actions/download-artifact@v4
+      # المبدأ العام الأخير في دليل الأعطال: عند فشل بناء Gradle، السبب
+      # الحقيقي غالبًا في daemon-*.out.log أو problems-report.html، وليس في
+      # الرسالة المختصرة أعلى الشاشة — نرفعهما دائمًا كملف كامل عند الفشل.
+      - name: Collect full failure logs
+        if: failure()
+        run: |
+          mkdir -p ci-failure-logs
+          find . -name "daemon-*.out.log" -exec cp {} ci-failure-logs/ \; 2>/dev/null || true
+          find . -name "problems-report.html" -exec cp {} ci-failure-logs/ \; 2>/dev/null || true
+          find "$HOME/.gradle" -name "*.log" -exec cp {} ci-failure-logs/ \; 2>/dev/null || true
+          # ⚠️ نمط استبعاد دقيق (القسم 5): */.git/* وليس *.git*، لأن الأخير
+          # يستبعد .github/workflows بالخطأ أيضًا لتطابق بداية الاسم.
+          zip -r ci-failure-logs.zip ci-failure-logs -x "*/.git/*" || true
+
+      - name: Upload full failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
         with:
-          name: web-build
-          path: web
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: web
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
-        continue-on-error: true
+          name: ci-failure-logs
+          path: ci-failure-logs.zip
+          if-no-files-found: ignore

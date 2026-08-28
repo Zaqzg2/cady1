@@ -1,211 +1,223 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../models/import_record.dart';
-import '../services/import_service.dart';
-import '../theme/app_theme.dart';
-import 'review_screen.dart';
 
-class ImportScreen extends StatefulWidget {
+import '../providers/import_session_provider.dart';
+import '../providers/inventory_provider.dart';
+import '../providers/settings_provider.dart';
+import 'column_mapping_screen.dart';
+import 'data_review_screen.dart';
+
+class ImportScreen extends StatelessWidget {
   const ImportScreen({super.key});
 
-  @override
-  State<ImportScreen> createState() => _ImportScreenState();
-}
+  Future<void> _pickExcel(BuildContext context) async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['xlsx', 'xls', 'csv'],
+      withData: true, // ضروري على الويب لضمان توفر bytes مباشرة بلا مسار ملف
+    );
+    if (result == null || result.files.isEmpty || !context.mounted) return;
 
-class _ImportScreenState extends State<ImportScreen> {
-  bool _isProcessing = false;
-  String? _statusMessage;
-
-  Future<void> _handleImport(ImportSourceType type, String label) async {
-    setState(() {
-      _isProcessing = true;
-      _statusMessage = 'جاري قراءة الملف واستخراج البيانات...';
-    });
-
-    try {
-      final service = context.read<ImportService>();
-      final fileName = switch (type) {
-        ImportSourceType.excel => 'مخزون_تجريبي.xlsx',
-        ImportSourceType.pdf => 'كشف_مخزون.pdf',
-        ImportSourceType.image => 'صورة_كشف.jpg',
-        ImportSourceType.camera => 'تصوير_${DateTime.now().millisecondsSinceEpoch}.jpg',
-      };
-
-      final result = await service.processFile(
-        sourceType: type,
-        fileName: fileName,
-      );
-
-      if (!mounted) return;
-
-      setState(() {
-        _isProcessing = false;
-        _statusMessage = null;
-      });
-
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => ReviewScreen(
-            importResult: result,
-          ),
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _isProcessing = false;
-        _statusMessage = null;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('حدث خطأ: $e'), backgroundColor: AppTheme.danger),
-      );
+    final file = result.files.first;
+    if (file.bytes == null) {
+      _showError(context, 'تعذّرت قراءة الملف المختار.');
+      return;
     }
+
+    final session = context.read<ImportSessionProvider>();
+    final products = context.read<InventoryProvider>().products;
+    await session.importExcelOrCsv(file.bytes!, file.name, products);
+    if (!context.mounted) return;
+    _navigateBasedOnStep(context, session);
+  }
+
+  Future<void> _pickPdf(BuildContext context) async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty || !context.mounted) return;
+
+    final file = result.files.first;
+    if (file.bytes == null) {
+      _showError(context, 'تعذّرت قراءة الملف المختار.');
+      return;
+    }
+
+    final session = context.read<ImportSessionProvider>();
+    final engine = context.read<SettingsProvider>().buildOcrEngine();
+    final products = context.read<InventoryProvider>().products;
+    await session.importPdfBytes(file.bytes!, file.name, engine, products);
+    if (!context.mounted) return;
+    _navigateBasedOnStep(context, session);
+  }
+
+  Future<void> _pickImage(BuildContext context, {required bool fromCamera}) async {
+    final session = context.read<ImportSessionProvider>();
+    final bytes = fromCamera
+        ? await session.imageService.captureFromCamera()
+        : await session.imageService.pickFromGallery();
+    if (bytes == null || !context.mounted) return;
+
+    final engine = context.read<SettingsProvider>().buildOcrEngine();
+    final products = context.read<InventoryProvider>().products;
+    await session.importImageBytes(
+      bytes,
+      fromCamera ? 'تصوير_مستند.jpg' : 'صورة_مختارة.jpg',
+      engine,
+      products,
+    );
+    if (!context.mounted) return;
+
+    if (session.qualityWarning != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(session.qualityWarning!)));
+    }
+    _navigateBasedOnStep(context, session);
+  }
+
+  void _navigateBasedOnStep(BuildContext context, ImportSessionProvider session) {
+    switch (session.step) {
+      case ImportStep.error:
+        _showError(context, session.errorMessage ?? 'حدث خطأ غير متوقع.');
+      case ImportStep.columnMapping:
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ColumnMappingScreen()));
+      case ImportStep.review:
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DataReviewScreen()));
+      case ImportStep.idle:
+      case ImportStep.processing:
+        break;
+    }
+  }
+
+  void _showError(BuildContext context, String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
   Widget build(BuildContext context) {
+    final hasApiKey = context.watch<SettingsProvider>().hasApiKey;
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('استيراد البيانات'),
-      ),
-      body: _isProcessing
-          ? Center(
+      appBar: AppBar(title: const Text('استيراد البيانات')),
+      body: Consumer<ImportSessionProvider>(
+        builder: (context, session, _) {
+          if (session.step == ImportStep.processing) {
+            return const Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const CircularProgressIndicator(),
-                  const SizedBox(height: 20),
-                  Text(_statusMessage ?? '', style: const TextStyle(fontSize: 15)),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'OCR → تنظيف → مطابقة الأصناف → مراجعة',
-                    style: TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text('جارٍ قراءة البيانات...'),
                 ],
               ),
-            )
-          : ListView(
-              padding: const EdgeInsets.all(20),
-              children: [
-                const Text(
-                  'اختر مصدر البيانات',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'يدعم Excel وPDF والصور والتصوير المباشر مع OCR عربي وكتابة يدوية',
-                  style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 28),
-                _ImportButton(
-                  icon: Icons.table_chart_rounded,
-                  label: 'Excel',
-                  subtitle: 'XLSX / XLS / CSV',
-                  color: const Color(0xFF217346),
-                  onTap: () => _handleImport(ImportSourceType.excel, 'Excel'),
-                ),
-                const SizedBox(height: 14),
-                _ImportButton(
-                  icon: Icons.picture_as_pdf_rounded,
-                  label: 'PDF',
-                  subtitle: 'ملفات PDF وجداول',
-                  color: const Color(0xFFD32F2F),
-                  onTap: () => _handleImport(ImportSourceType.pdf, 'PDF'),
-                ),
-                const SizedBox(height: 14),
-                _ImportButton(
-                  icon: Icons.image_rounded,
-                  label: 'صورة',
-                  subtitle: 'JPG / PNG / WEBP',
-                  color: AppTheme.info,
-                  onTap: () => _handleImport(ImportSourceType.image, 'صورة'),
-                ),
-                const SizedBox(height: 14),
-                _ImportButton(
-                  icon: Icons.camera_alt_rounded,
-                  label: 'تصوير مستند',
-                  subtitle: 'تصوير مباشر بالكاميرا',
-                  color: AppTheme.secondary,
-                  onTap: () => _handleImport(ImportSourceType.camera, 'تصوير'),
-                ),
-                const SizedBox(height: 32),
+            );
+          }
+
+          return ListView(
+            padding: const EdgeInsets.all(20),
+            children: [
+              if (!hasApiKey)
                 Card(
-                  color: AppTheme.primary.withOpacity(0.06),
+                  color: Theme.of(context).colorScheme.tertiaryContainer,
                   child: const Padding(
-                    padding: EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('نصائح لأفضل نتائج OCR', style: TextStyle(fontWeight: FontWeight.bold)),
-                        SizedBox(height: 8),
-                        Text('• صوّر الورقة كاملة وفي إضاءة جيدة'),
-                        Text('• تجنّب الظلال والانعكاسات'),
-                        Text('• ثبّت الهاتف وحاول أن تكون الورقة مستوية'),
-                        Text('• اقترب من المستند دون قطع الحواف'),
-                      ],
+                    padding: EdgeInsets.all(14),
+                    child: Text(
+                      'استخراج الصور وPDF يحتاج تفعيل مفتاح الاستخراج الذكي من الإعدادات. '
+                      'استيراد Excel/CSV يعمل مباشرة بلا إنترنت.',
+                      style: TextStyle(fontSize: 12.5),
                     ),
                   ),
                 ),
+              const SizedBox(height: 12),
+              _SourceButton(
+                icon: Icons.table_chart_outlined,
+                label: 'Excel',
+                subtitle: 'xlsx / xls / csv — يعمل دون إنترنت',
+                onTap: () => _pickExcel(context),
+              ),
+              _SourceButton(
+                icon: Icons.picture_as_pdf_outlined,
+                label: 'PDF',
+                subtitle: 'مطبوع أو ممسوح ضوئيًا',
+                onTap: () => _pickPdf(context),
+              ),
+              _SourceButton(
+                icon: Icons.image_outlined,
+                label: 'صورة',
+                subtitle: 'اختيار من المعرض',
+                onTap: () => _pickImage(context, fromCamera: false),
+              ),
+              _SourceButton(
+                icon: Icons.camera_alt_outlined,
+                label: 'تصوير مستند',
+                subtitle: 'تصوير مباشر بالكاميرا',
+                onTap: () => _pickImage(context, fromCamera: true),
+              ),
+              if (session.step == ImportStep.error) ...[
+                const SizedBox(height: 8),
+                Card(
+                  color: Theme.of(context).colorScheme.errorContainer,
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Text(session.errorMessage ?? ''),
+                  ),
+                ),
               ],
-            ),
+            ],
+          );
+        },
+      ),
     );
   }
 }
 
-class _ImportButton extends StatelessWidget {
+class _SourceButton extends StatelessWidget {
   final IconData icon;
   final String label;
   final String subtitle;
-  final Color color;
   final VoidCallback onTap;
 
-  const _ImportButton({
+  const _SourceButton({
     required this.icon,
     required this.label,
     required this.subtitle,
-    required this.color,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(16),
-      elevation: 1,
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
       child: InkWell(
-        onTap: onTap,
         borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: color.withOpacity(0.3)),
-          ),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
           child: Row(
             children: [
               Container(
-                width: 52,
-                height: 52,
+                padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: color.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(14),
+                  color: Theme.of(context).colorScheme.primaryContainer,
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                child: Icon(icon, color: color, size: 28),
+                child: Icon(icon, color: Theme.of(context).colorScheme.onPrimaryContainer),
               ),
-              const SizedBox(width: 16),
+              const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(label, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
-                    Text(subtitle, style: TextStyle(fontSize: 13, color: Colors.grey.shade600)),
+                    Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                    const SizedBox(height: 2),
+                    Text(subtitle, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12.5)),
                   ],
                 ),
               ),
-              Icon(Icons.arrow_back_ios_new, size: 16, color: Colors.grey.shade400),
+              const Icon(Icons.chevron_left_rounded),
             ],
           ),
         ),
