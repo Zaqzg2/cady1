@@ -1,5 +1,5 @@
 # بناء تطبيق محلل المخزون بدون كمبيوتر محلي
-# يعمل على GitHub Actions ويفعّل عند الدفع أو يدوياً
+# يتضمن إصلاحات دليل أعطال Gradle (compileSdk / Kotlin / --no-pub)
 
 name: Build Inventory Analyzer
 
@@ -8,10 +8,10 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
-  workflow_dispatch:  # تشغيل يدوي من تبويب Actions
+  workflow_dispatch:
 
 env:
-  FLUTTER_VERSION: "3.24.0"
+  FLUTTER_VERSION: "3.24.5"
 
 jobs:
   # ─────────────────────────────────────────────
@@ -40,17 +40,44 @@ jobs:
       - name: Flutter doctor
         run: flutter doctor -v
 
-      - name: Generate platform folders (android/ios/web)
+      - name: Generate platform folders (android/web)
         run: flutter create . --project-name inventory_analyzer --org com.inventory.analyzer --platforms android,web
+
+      # صمام أمان رسمي لـ AGP 9 / Built-in Kotlin (خطأ kotlin())
+      - name: Fix gradle.properties (builtInKotlin)
+        run: |
+          PROP=android/gradle.properties
+          touch "$PROP"
+          grep -q 'android.builtInKotlin' "$PROP" || echo 'android.builtInKotlin=false' >> "$PROP"
+          grep -q 'android.newDsl' "$PROP" || echo 'android.newDsl=false' >> "$PROP"
+          echo "----- android/gradle.properties -----"
+          cat "$PROP"
 
       - name: Get dependencies
         run: flutter pub get
 
+      # ترقيع compileSdk=36 في كل الحزم قبل Gradle (حل تعارض file_picker وغيره)
+      - name: Patch compileSdk to 36
+        run: |
+          python3 tool/patch_compile_sdk.py
+          echo "----- patch report -----"
+          cat compile_sdk_patch_report.txt || true
+
+      - name: Upload compileSdk patch report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-sdk-patch-report
+          path: compile_sdk_patch_report.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Analyze (اختياري)
         run: flutter analyze --no-fatal-infos || true
 
+      # --no-pub يمنع pub من إعادة تحميل الحزم وإبطال الترقيع
       - name: Build APK (release)
-        run: flutter build apk --release
+        run: flutter build apk --release --no-pub
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -124,4 +151,4 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-        continue-on-error: true  # لا يفشل البناء إذا لم تُفعّل Pages بعد
+        continue-on-error: true

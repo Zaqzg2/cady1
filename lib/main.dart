@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
@@ -7,8 +10,24 @@ import 'services/import_service.dart';
 import 'screens/home_shell.dart';
 
 void main() {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(const InventoryAnalyzerApp());
+  runZonedGuarded(() {
+    WidgetsFlutterBinding.ensureInitialized();
+
+    FlutterError.onError = (details) {
+      FlutterError.presentError(details);
+      debugPrint('FlutterError: ${details.exceptionAsString()}');
+    };
+
+    // أخطاء المنصة (مثل Android)
+    PlatformDispatcher.instance.onError = (error, stack) {
+      debugPrint('PlatformDispatcher error: $error\n$stack');
+      return true;
+    };
+
+    runApp(const InventoryAnalyzerApp());
+  }, (error, stack) {
+    debugPrint('Uncaught zone error: $error\n$stack');
+  });
 }
 
 class InventoryAnalyzerApp extends StatelessWidget {
