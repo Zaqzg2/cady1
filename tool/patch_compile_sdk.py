@@ -38,16 +38,12 @@ MIN_COMPILE_SDK = 36
 PACKAGE_CONFIG_PATH = os.path.join(".dart_tool", "package_config.json")
 LOG_PATH = "compile_sdk_patch_log.txt"
 
-# النمط الرمزي: compileSdk(Version) يشير لـ flutter.compileSdkVersion (أو
-# project.flutter...)، بأي صيغة Groovy أو Kotlin DSL
-_SYMBOLIC_PATTERN = re.compile(
-    r"compileSdk(?:Version)?\s*(?:=)?\s*\(?\s*(?:project\.)?flutter\.compileSdkVersion\s*\)?"
-)
+# نمط اكتشاف: أي سطر يبدأ (بعد المسافات فقط) بـ compileSdk أو compileSdkVersion،
+# بغضّ النظر عمّا يليه مهما كان تعبيره (رمزي بسيط، شرطي، معقّد...).
+_LINE_START_PATTERN = re.compile(r"^(\s*)compileSdk(?:Version)?\b")
 
-# النمط العددي: compileSdk(Version) = <رقم>. نرفع الرقم فقط إن كان أقل من الحد الأدنى.
-_NUMERIC_PATTERN = re.compile(
-    r"(compileSdk(?:Version)?\s*(?:=)?\s*\(?\s*)(\d+)(\s*\)?)"
-)
+# لاستخراج رقم صريح موجود بالفعل في السطر (لتفادي تغيير سطر يحتوي رقمًا كافيًا أصلًا)
+_EXISTING_NUMBER_PATTERN = re.compile(r"compileSdk(?:Version)?\s*=?\s*\(?\s*(\d+)\b")
 
 
 def uri_to_path(uri: str) -> str:
@@ -57,25 +53,37 @@ def uri_to_path(uri: str) -> str:
 
 def patch_file(path: str, is_kts: bool) -> bool:
     with open(path, "r", encoding="utf-8") as f:
-        original = f.read()
-    content = original
+        lines = f.readlines()
 
-    replacement = f"compileSdk = {MIN_COMPILE_SDK}" if is_kts else f"compileSdk {MIN_COMPILE_SDK}"
-    content = _SYMBOLIC_PATTERN.sub(replacement, content)
+    changed = False
+    new_lines = []
 
-    def _numeric_replacer(match: re.Match) -> str:
-        prefix, num_str, suffix = match.group(1), match.group(2), match.group(3)
-        if int(num_str) < MIN_COMPILE_SDK:
-            return f"{prefix}{MIN_COMPILE_SDK}{suffix}"
-        return match.group(0)
+    for line in lines:
+        match = _LINE_START_PATTERN.match(line)
+        if not match:
+            new_lines.append(line)
+            continue
 
-    content = _NUMERIC_PATTERN.sub(_numeric_replacer, content)
+        # إن كان السطر يحتوي بالفعل رقمًا صريحًا كافيًا، اتركه كما هو تمامًا
+        number_match = _EXISTING_NUMBER_PATTERN.search(line)
+        if number_match and int(number_match.group(1)) >= MIN_COMPILE_SDK:
+            new_lines.append(line)
+            continue
 
-    if content != original:
+        # ⚠️ الإصلاح الجوهري: نستبدل *السطر كاملًا* بسطر نظيف مضمون الصحة،
+        # بدل محاولة استبدال جزء منه بنمط نخمّنه (رمزي/رقمي) — لأن تنويعات
+        # الصيغة بين الحزم (خصوصًا بعد إعادة هيكلة بعضها كـ Melos federated
+        # plugins) أكثر تعدّدًا مما يمكن تغطيته بنمط واحد بأمان. استبدال
+        # السطر بالكامل يعمل بصرف النظر عن التعبير الأصلي أيًا كان.
+        indent = match.group(1)
+        replacement = f"{indent}compileSdk = {MIN_COMPILE_SDK}\n" if is_kts else f"{indent}compileSdk {MIN_COMPILE_SDK}\n"
+        new_lines.append(replacement)
+        changed = True
+
+    if changed:
         with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return True
-    return False
+            f.writelines(new_lines)
+    return changed
 
 
 def main() -> None:
