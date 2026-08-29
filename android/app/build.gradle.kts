@@ -31,10 +31,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_17.toString()
-    }
-
     defaultConfig {
         applicationId = "com.example.inventory_analyzer"
         minSdk = flutter.minSdkVersion
@@ -78,4 +74,18 @@ android {
 
 flutter {
     source = "../.."
+}
+
+// ✅ مُصحَّح فعليًا بناءً على خطأ CI حقيقي بتاريخ 2026-08-29: كتلة
+// android { kotlinOptions { jvmTarget = ... } } القديمة صارت خطأ ترجمة
+// صريحًا (وليس مجرد تحذير) مع AGP 9 — راجع رسالة الخطأ:
+//   'var jvmTarget: String' is deprecated. Please migrate to the
+//   compilerOptions DSL.
+// البديل الحديث الموثَّق رسميًا (docs.flutter.dev/release/breaking-changes/
+// migrate-to-built-in-kotlin/for-app-developers) هو كتلة kotlin{} منفصلة
+// خارج android{} تمامًا، كما هنا:
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
 }
