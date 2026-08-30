@@ -35,36 +35,45 @@ class _InventoryAnalyzerAppState extends State<InventoryAnalyzerApp> {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'محلل المخزون والتقارير الذكي',
-      debugShowCheckedModeBanner: false,
-      theme: AppTheme.light(),
-      darkTheme: AppTheme.dark(),
-      locale: const Locale('ar'),
-      supportedLocales: const [Locale('ar')],
-      localizationsDelegates: const [
-        GlobalMaterialLocalizations.delegate,
-        GlobalWidgetsLocalizations.delegate,
-        GlobalCupertinoLocalizations.delegate,
+    // ⚠️ MultiProvider يجب أن يُحيط بـ MaterialApp بالكامل، وليس home: فقط.
+    // السبب: MaterialApp يُنشئ Navigator داخليًا، وhome: هو محتوى المسار
+    // الأول فقط داخل ذلك الـ Navigator. أي شاشة تُفتَح لاحقًا عبر
+    // Navigator.push (الاستيراد، المراجعة، تفاصيل الفرع...) تصبح مسارًا
+    // شقيقًا لمسار home ضمن نفس الـ Navigator — وليست امتدادًا لشجرة
+    // widgets الخاصة بـhome — فلا ترى أي Provider معرَّف داخل home: إطلاقًا.
+    // النتيجة: ProviderNotFoundException أثناء build()، وفي بناء release
+    // (على عكس debug) تُستبدَل شاشة الخطأ الحمراء التفصيلية بمربع رمادي
+    // فارغ بلا أي رسالة — بالضبط ما ظهر عند فتح شاشة الاستيراد.
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => InventoryProvider()..load()),
+        ChangeNotifierProvider(create: (_) => ImportSessionProvider()),
+        ChangeNotifierProvider(create: (_) => SettingsProvider()..load()),
       ],
-      builder: (context, child) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: child ?? const SizedBox.shrink(),
+      child: MaterialApp(
+        title: 'محلل المخزون والتقارير الذكي',
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.light(),
+        darkTheme: AppTheme.dark(),
+        locale: const Locale('ar'),
+        supportedLocales: const [Locale('ar')],
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        builder: (context, child) => Directionality(
+          textDirection: TextDirection.rtl,
+          child: child ?? const SizedBox.shrink(),
+        ),
+        home: _storageError != null
+            ? _StorageErrorScreen(
+                error: _storageError!,
+                retrying: _retrying,
+                onRetry: _retryInit,
+              )
+            : const HomeShell(),
       ),
-      home: _storageError != null
-          ? _StorageErrorScreen(
-              error: _storageError!,
-              retrying: _retrying,
-              onRetry: _retryInit,
-            )
-          : MultiProvider(
-              providers: [
-                ChangeNotifierProvider(create: (_) => InventoryProvider()..load()),
-                ChangeNotifierProvider(create: (_) => ImportSessionProvider()),
-                ChangeNotifierProvider(create: (_) => SettingsProvider()..load()),
-              ],
-              child: const HomeShell(),
-            ),
     );
   }
 }
