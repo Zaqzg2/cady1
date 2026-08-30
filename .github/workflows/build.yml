@@ -66,11 +66,26 @@ jobs:
           # GitHub قبل أول بناء، فـ keytool -keypasswd لا يدعم PKCS12 إطلاقًا
           # ولا يصلح كاختبار بديل.
 
+      # ⚠️ ملاحظة 2026-08-30: قد تفشل هذه الخطوة أحيانًا برسالة
+      # "Received status code 429 from server: Too Many Requests" عند تحميل
+      # اعتماديات Gradle/Kotlin من Maven Central — هذا تحديد معدّل مؤقّت من
+      # الخادم نفسه، لا علاقة له بهذا المشروع، ولذلك تُغلَّف هذه الخطوة
+      # بإعادة محاولة تلقائية بدل الحاجة لإعادة تشغيل الـ workflow يدويًا.
       - name: Build APK
-        run: flutter build apk --release --no-pub
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 20
+          max_attempts: 3
+          retry_wait_seconds: 45
+          command: flutter build apk --release --no-pub
 
       - name: Build Web
-        run: flutter build web --release --no-pub
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 20
+          max_attempts: 3
+          retry_wait_seconds: 45
+          command: flutter build web --release --no-pub
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
