@@ -70,6 +70,21 @@ android {
             isShrinkResources = false
         }
     }
+
+    // ✅ مُصحَّح فعليًا بناءً على خطأ CI حقيقي بتاريخ 2026-08-30: مهمة
+    // lintVitalAnalyzeRelease (تُشغَّل تلقائيًا مع أي بناء release) تنهار
+    // بعلّة داخلية موثَّقة صراحة من الأداة نفسها ("this is a bug in lint or
+    // one of the libraries it depends on") عند تحليل ExifDataCopier.java من
+    // حزمة image_picker_android — لا علاقة لها بصحة كود هذا المشروع.
+    // checkReleaseBuilds تحديدًا (وليس lintOptions القديمة) هي الخاصية
+    // الرسمية الحالية لتعطيل فحوصات lint "الحرجة" المرتبطة تلقائيًا بأي بناء
+    // release، دون التأثير على عمل التطبيق إطلاقًا.
+    lint {
+        checkReleaseBuilds = false
+        // اقتراح الأداة نفسها في رسالة الخطأ (المُفحِّص المنهار CommentDetector
+        // يُستخدَم من هذين الفحصين تحديدًا) — إضافي احتياطي بلا أي ضرر
+        disable.addAll(setOf("EasterEgg", "StopShip"))
+    }
 }
 
 flutter {
