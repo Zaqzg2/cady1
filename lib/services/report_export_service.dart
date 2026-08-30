@@ -10,6 +10,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
 import '../models/catalog_models.dart';
+import '../models/inventory_models.dart';
 import 'analytics_service.dart';
 import 'expiry_service.dart';
 

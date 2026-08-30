@@ -3,15 +3,15 @@ import 'package:uuid/uuid.dart';
 const _uuid = Uuid();
 
 /// تصنيف/فئة للصنف (مثال: ألبان، منظفات...)
-class Category {
+class ProductCategory {
   final String id;
   String name;
 
-  Category({String? id, required this.name}) : id = id ?? _uuid.v4();
+  ProductCategory({String? id, required this.name}) : id = id ?? _uuid.v4();
 
   Map<String, dynamic> toMap() => {'id': id, 'name': name};
 
-  factory Category.fromMap(Map<dynamic, dynamic> map) => Category(
+  factory ProductCategory.fromMap(Map<dynamic, dynamic> map) => ProductCategory(
         id: map['id'] as String,
         name: map['name'] as String? ?? '',
       );

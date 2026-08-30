@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../models/inventory_models.dart';
 import '../providers/inventory_provider.dart';
 import '../services/expiry_service.dart';
 import '../theme/app_theme.dart';

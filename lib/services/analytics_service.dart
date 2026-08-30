@@ -52,7 +52,7 @@ class BranchDistribution {
 }
 
 class CategoryDistribution {
-  final Category category;
+  final ProductCategory category;
   final double totalQuantity;
   final int itemCount;
   CategoryDistribution({
@@ -202,7 +202,7 @@ class AnalyticsService {
   List<CategoryDistribution> distributionByCategory(
     List<InventoryItem> items,
     List<Product> products,
-    List<Category> categories,
+    List<ProductCategory> categories,
   ) {
     final productById = {for (final p in products) p.id: p};
     return categories.map((cat) {

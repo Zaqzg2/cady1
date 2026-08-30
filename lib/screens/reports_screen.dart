@@ -28,7 +28,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     super.dispose();
   }
 
-  Future<Uint8List?> _buildPdfBytes(InventoryProvider provider) async {
+  Future<Uint8List> _buildPdfBytes(InventoryProvider provider) async {
     return _exportService.buildPdfReport(
       kpis: provider.kpis!,
       topItems: provider.topItems(n: 10),

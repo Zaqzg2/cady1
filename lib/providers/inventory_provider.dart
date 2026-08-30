@@ -18,7 +18,7 @@ class InventoryProvider extends ChangeNotifier {
   final FuzzyMatchingService _fuzzy = FuzzyMatchingService();
 
   List<Product> products = [];
-  List<Category> categories = [];
+  List<ProductCategory> categories = [];
   List<Branch> branches = [];
   List<InventoryItem> inventory = [];
   List<InventoryTransaction> transactions = [];
@@ -114,14 +114,14 @@ class InventoryProvider extends ChangeNotifier {
     return branch;
   }
 
-  Future<Category> getOrCreateCategory(String name) async {
+  Future<ProductCategory> getOrCreateCategory(String name) async {
     final normalized = ArabicTextUtils.normalize(name);
     final existing = categories
         .where((c) => ArabicTextUtils.normalize(c.name) == normalized)
         .firstOrNullSafe;
     if (existing != null) return existing;
 
-    final category = Category(name: name.trim());
+    final category = ProductCategory(name: name.trim());
     await _repo.saveCategory(category);
     categories = _repo.getCategories();
     return category;
@@ -206,7 +206,10 @@ class InventoryProvider extends ChangeNotifier {
       }
 
       final quantityCell = row.cellOf(FieldType.quantity);
-      final quantity = quantityCell != null
+      // ⚠️ لازم تحديد double صراحة هنا: بلا هذا التحديد يُستنتَج النوع num
+      // (وليس double) لأن الحرفين 0 أدناه بلا سياق يفرض تحويلهما، فيفشل لاحقًا
+      // عند التمرير لـ InventoryItem(quantity: ...) التي تتوقع double بالضبط.
+      final double quantity = quantityCell != null
           ? (ArabicTextUtils.tryParseNumber(quantityCell.value) ?? 0)
           : 0;
 

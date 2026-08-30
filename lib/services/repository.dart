@@ -28,13 +28,13 @@ class Repository {
       _storage.box(StorageService.boxProducts).delete(id);
 
   // ---------------- Categories ----------------
-  List<Category> getCategories() => _storage
+  List<ProductCategory> getCategories() => _storage
       .box(StorageService.boxCategories)
       .values
-      .map((m) => Category.fromMap(m))
+      .map((m) => ProductCategory.fromMap(m))
       .toList();
 
-  Future<void> saveCategory(Category c) =>
+  Future<void> saveCategory(ProductCategory c) =>
       _storage.box(StorageService.boxCategories).put(c.id, c.toMap());
 
   // ---------------- Branches ----------------
