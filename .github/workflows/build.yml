@@ -1,122 +1,59 @@
-name: Build Flutter App
+name: Build and Deploy PaddleOCR Web Prototype to Netlify
 
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: subosito/flutter-action@v2
         with:
           channel: stable
 
       - name: Flutter pub get
         run: flutter pub get
 
-      - name: Static analysis
-        run: flutter analyze
-        # لا نوقف البناء بسبب تحذيرات التحليل الأولى — فقط أخطاء الترجمة الحقيقية
-        continue-on-error: true
-
-      # القسم 3 من دليل الأعطال: بعض الحزم (خصوصًا ما يعتمد على
-      # flutter_plugin_android_lifecycle مثل file_picker/image_picker) تتطلب
-      # compileSdk >= 36، وقد تكون القيمة الافتراضية المضمّنة في Flutter أقل.
-      - name: Patch compileSdk in pub-cache dependencies
-        run: python3 tool/patch_compile_sdk.py
-
-      - name: Upload compileSdk patch log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: compile-sdk-patch-log
-          path: compile_sdk_patch_log.txt
-          if-no-files-found: ignore
-
-      # القسم 6: يُنشأ فقط إذا كانت أسرار التوقيع مضبوطة في المستودع
-      # (Settings → Secrets and variables → Actions). بدونها يُبنى APK
-      # بتوقيع debug تلقائيًا (صالح للتجربة فقط، غير صالح للنشر).
-      - name: Prepare signing (if configured)
-        if: ${{ env.KEYSTORE_BASE64 != '' }}
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+      # ⚠️ الرابط أدناه تخمين لمسار الملف داخل مستودع الحزمة — قد يتغيّر.
+      # إن فشلت هذه الخطوة، افتح
+      # https://github.com/phanbaohuy96/flutter-paddle-ocr/tree/main/example
+      # يدويًا وحدِّث الرابط، أو الصق محتوى السكربت مباشرة هنا.
+      - name: Fetch and run the package's own web bundling script
         run: |
-          echo "$KEYSTORE_BASE64" | base64 -d > android/app/keystore.jks
-          cat > android/key.properties <<EOF
-          storePassword=$KEYSTORE_PASSWORD
-          keyPassword=$KEY_PASSWORD
-          keyAlias=$KEY_ALIAS
-          storeFile=keystore.jks
-          EOF
-          # تذكير القسم 6: storePassword وkeyPassword يجب أن تكونا متطابقتين
-          # حرفيًا (نوع الكيستور الافتراضي PKCS12 منذ Java 9+ لا يدعم خلافه)،
-          # وإلا فشل التوقيع لاحقًا بخطأ BadPaddingException غامض الصلة
-          # ظاهريًا بكلمات المرور. تحقّق من تطابق السرّين نصيًا في إعدادات
-          # GitHub قبل أول بناء، فـ keytool -keypasswd لا يدعم PKCS12 إطلاقًا
-          # ولا يصلح كاختبار بديل.
+          curl -fSL -o prepare_web.sh \
+            https://raw.githubusercontent.com/phanbaohuy96/flutter-paddle-ocr/main/example/prepare_web.sh \
+            || { echo "⚠️ تعذّر جلب prepare_web.sh تلقائيًا — راجع تعليق هذه الخطوة"; exit 1; }
+          bash prepare_web.sh
 
-      # ⚠️ ملاحظة 2026-08-30: قد تفشل هذه الخطوة أحيانًا برسالة
-      # "Received status code 429 from server: Too Many Requests" عند تحميل
-      # اعتماديات Gradle/Kotlin من Maven Central — هذا تحديد معدّل مؤقّت من
-      # الخادم نفسه، لا علاقة له بهذا المشروع، ولذلك تُغلَّف هذه الخطوة
-      # بإعادة محاولة تلقائية بدل الحاجة لإعادة تشغيل الـ workflow يدويًا.
-      - name: Build APK
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 20
-          max_attempts: 3
-          retry_wait_seconds: 45
-          command: flutter build apk --release --no-pub
-
+      # Netlify يخدم من جذر الموقع مباشرة (على عكس GitHub Pages) — لا حاجة
+      # لـ --base-href هنا.
       - name: Build Web
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 20
-          max_attempts: 3
-          retry_wait_seconds: 45
-          command: flutter build web --release --no-pub
+        run: flutter build web --release
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - name: Deploy to Netlify
+        uses: nwtgck/actions-netlify@v3.0
         with:
-          name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          publish-dir: 'build/web'
+          production-branch: main
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          deploy-message: "نشر تلقائي من GitHub Actions — ${{ github.sha }}"
+          enable-pull-request-comment: false
+          enable-commit-comment: true
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        timeout-minutes: 5
 
-      - name: Upload Web build
-        uses: actions/upload-artifact@v4
-        with:
-          name: web-build
-          path: build/web
-
-      # المبدأ العام الأخير في دليل الأعطال: عند فشل بناء Gradle، السبب
-      # الحقيقي غالبًا في daemon-*.out.log أو problems-report.html، وليس في
-      # الرسالة المختصرة أعلى الشاشة — نرفعهما دائمًا كملف كامل عند الفشل.
-      - name: Collect full failure logs
-        if: failure()
+      - name: Note on success meaning
         run: |
-          mkdir -p ci-failure-logs
-          find . -name "daemon-*.out.log" -exec cp {} ci-failure-logs/ \; 2>/dev/null || true
-          find . -name "problems-report.html" -exec cp {} ci-failure-logs/ \; 2>/dev/null || true
-          find "$HOME/.gradle" -name "*.log" -exec cp {} ci-failure-logs/ \; 2>/dev/null || true
-          # ⚠️ نمط استبعاد دقيق (القسم 5): */.git/* وليس *.git*، لأن الأخير
-          # يستبعد .github/workflows بالخطأ أيضًا لتطابق بداية الاسم.
-          zip -r ci-failure-logs.zip ci-failure-logs -x "*/.git/*" || true
-
-      - name: Upload full failure logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-failure-logs
-          path: ci-failure-logs.zip
-          if-no-files-found: ignore
+          echo "⚠️ نجاح البناء/النشر لا يعني بالضرورة أن OCR يعمل فعليًا —"
+          echo "فقط أن التجميع والرفع اكتملا. افتح رابط Netlify فعليًا وجرّب"
+          echo "الزر على صورة حقيقية للتحقق (راجع README.md)."
