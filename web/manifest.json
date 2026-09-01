@@ -1,0 +1,37 @@
+{
+    "name": "محلل المخزون والتقارير الذكي",
+    "short_name": "محلل المخزون",
+    "start_url": ".",
+    "display": "standalone",
+    "background_color": "#FFFFFF",
+    "theme_color": "#0F6B5C",
+    "description": "تطبيق لإدارة وتحليل بيانات المخزون والمبيعات والكشوف",
+    "orientation": "portrait-primary",
+    "dir": "rtl",
+    "lang": "ar",
+    "prefer_related_applications": false,
+    "icons": [
+        {
+            "src": "icons/Icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon-maskable-192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "maskable"
+        },
+        {
+            "src": "icons/Icon-maskable-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "maskable"
+        }
+    ]
+}
