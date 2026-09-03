@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../services/api_health_service.dart';
 import '../services/ocr_service.dart';
 
 /// إعدادات محرك الاستخراج الذكي. المفتاح يُخزَّن عبر Keychain/Keystore
@@ -18,11 +19,19 @@ class SettingsProvider extends ChangeNotifier {
   static const _defaultModel = 'claude-sonnet-5';
 
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  final ApiHealthService _apiHealth = const ApiHealthService();
 
   String? apiKey;
   String apiBaseUrl = _defaultBaseUrl;
   String model = _defaultModel;
   bool isLoaded = false;
+
+  /// نتيجة آخر اختبار فعلي للمفتاح في هذه الجلسة (قسم ١ — لا نفترض صحة
+  /// المفتاح من شكله، بل من استجابة حقيقية من المزوّد). null يعني "لم
+  /// يُختبر بعد في هذه الجلسة" — فرّق هذه الحالة عن "لا يوجد مفتاح" عبر
+  /// [hasApiKey] في الواجهة، فالمعنيان مختلفان (قسم ١١: ⚪ مقابل 🟠).
+  ApiHealthResult? lastHealthResult;
+  bool isTestingKey = false;
 
   bool get hasApiKey => apiKey != null && apiKey!.trim().isNotEmpty;
 
@@ -41,6 +50,7 @@ class SettingsProvider extends ChangeNotifier {
 
   Future<void> setApiKey(String value) async {
     apiKey = value.trim();
+    lastHealthResult = null; // نتيجة الاختبار السابقة (إن وُجدت) خاصة بمفتاح مختلف الآن
     notifyListeners();
     try {
       await _secureStorage.write(key: _keyApiKey, value: apiKey);
@@ -51,6 +61,7 @@ class SettingsProvider extends ChangeNotifier {
 
   Future<void> clearApiKey() async {
     apiKey = null;
+    lastHealthResult = null;
     notifyListeners();
     try {
       await _secureStorage.delete(key: _keyApiKey);
@@ -65,8 +76,21 @@ class SettingsProvider extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// اختبار فعلي للمفتاح الحالي مقابل المزوّد (زر [اختبار المفتاح] — قسم ١١).
+  /// لا يفعل شيئًا إن لم يوجد مفتاح أصلًا (الحالة ⚪ محسوبة مباشرة من
+  /// [hasApiKey] في الواجهة، بلا حاجة لنداء شبكة).
+  Future<void> testKey() async {
+    if (!hasApiKey) return;
+    isTestingKey = true;
+    notifyListeners();
+    final result = await _apiHealth.testApiKey(apiKey!, messagesEndpointUrl: apiBaseUrl);
+    lastHealthResult = result;
+    isTestingKey = false;
+    notifyListeners();
+  }
+
   OcrEngine buildOcrEngine() {
     if (!hasApiKey) return UnavailableOcrEngine();
-    return AiVisionOcrEngine(apiKey: apiKey!, apiBaseUrl: apiBaseUrl, model: model);
+    return AiVisionOcrEngine(apiKey: apiKey!, apiBaseUrl: apiBaseUrl, model: model, apiHealthService: _apiHealth);
   }
 }

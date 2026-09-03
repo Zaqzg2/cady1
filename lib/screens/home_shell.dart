@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../widgets/local_mode_banner.dart';
 import 'analysis_screen.dart';
 import 'dashboard_screen.dart';
 import 'data_browse_screen.dart';
@@ -28,7 +29,17 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(index: _index, children: _screens),
+      // الشارة هنا (فوق IndexedStack مباشرة) بدل داخل كل شاشة على حدة، حتى
+      // تظهر "أعلى التطبيق" بصرف النظر عن التبويب المفتوح (قسم ١٢) بلا
+      // الحاجة لتعديل Scaffold كل شاشة من الشاشات الخمس.
+      body: Column(
+        children: [
+          // true هنا تحديدًا (بخلاف استخدامها داخل شاشة الاستيراد أسفل
+          // AppBar) لأن هذا فعليًا أعلى الشاشة فورًا بلا أي AppBar فوقه.
+          const LocalModeBanner(applyTopSafeArea: true),
+          Expanded(child: IndexedStack(index: _index, children: _screens)),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const ImportScreen()),

@@ -2,7 +2,7 @@ import 'package:uuid/uuid.dart';
 
 const _uuid = Uuid();
 
-enum ImportSourceType { excel, pdf, image, camera }
+enum ImportSourceType { excel, pdf, image, camera, manual }
 
 extension ImportSourceTypeLabel on ImportSourceType {
   String get labelAr => switch (this) {
@@ -10,6 +10,7 @@ extension ImportSourceTypeLabel on ImportSourceType {
         ImportSourceType.pdf => 'ملف PDF',
         ImportSourceType.image => 'صورة',
         ImportSourceType.camera => 'تصوير مستند',
+        ImportSourceType.manual => 'إدخال يدوي',
       };
 }
 

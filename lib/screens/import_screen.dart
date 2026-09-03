@@ -5,6 +5,8 @@ import 'package:provider/provider.dart';
 import '../providers/import_session_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/settings_provider.dart';
+import '../widgets/import_error_recovery.dart';
+import '../widgets/local_mode_banner.dart';
 import 'column_mapping_screen.dart';
 import 'data_review_screen.dart';
 
@@ -80,7 +82,7 @@ class ImportScreen extends StatelessWidget {
   void _navigateBasedOnStep(BuildContext context, ImportSessionProvider session) {
     switch (session.step) {
       case ImportStep.error:
-        _showError(context, session.errorMessage ?? 'حدث خطأ غير متوقع.');
+        break; // البطاقة الدائمة أسفل هذه الشاشة (ImportErrorRecovery) تكفي؛ بلا SnackBar مكرر
       case ImportStep.columnMapping:
         Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ColumnMappingScreen()));
       case ImportStep.review:
@@ -95,10 +97,22 @@ class ImportScreen extends StatelessWidget {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Future<void> _retry(BuildContext context) async {
+    final session = context.read<ImportSessionProvider>();
+    await session.retryLastImport();
+    if (!context.mounted) return;
+    _navigateBasedOnStep(context, session);
+  }
+
+  void _manualEntry(BuildContext context) {
+    final session = context.read<ImportSessionProvider>();
+    final name = session.fileName;
+    session.startManualEntry(name: name.isEmpty ? 'إدخال يدوي' : name);
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DataReviewScreen()));
+  }
+
   @override
   Widget build(BuildContext context) {
-    final hasApiKey = context.watch<SettingsProvider>().hasApiKey;
-
     return Scaffold(
       appBar: AppBar(title: const Text('استيراد البيانات')),
       body: Consumer<ImportSessionProvider>(
@@ -119,18 +133,13 @@ class ImportScreen extends StatelessWidget {
           return ListView(
             padding: const EdgeInsets.all(20),
             children: [
-              if (!hasApiKey)
-                Card(
-                  color: Theme.of(context).colorScheme.tertiaryContainer,
-                  child: const Padding(
-                    padding: EdgeInsets.all(14),
-                    child: Text(
-                      'استخراج الصور وPDF يحتاج تفعيل مفتاح الاستخراج الذكي من الإعدادات. '
-                      'استيراد Excel/CSV يعمل مباشرة بلا إنترنت.',
-                      style: TextStyle(fontSize: 12.5),
-                    ),
-                  ),
-                ),
+              // نفس ودجت "وضع محلي" المستخدَمة أعلى التطبيق (بلا ازدواج نص) —
+              // وهنا تلتقط أيضًا حالة "مفتاح موجود لكن أثبت الاختبار/الاستخدام
+              // الفعلي أنه لا يعمل"، وليس فقط غياب المفتاح كليًا.
+              const ClipRRect(
+                borderRadius: BorderRadius.all(Radius.circular(14)),
+                child: LocalModeBanner(),
+              ),
               const SizedBox(height: 12),
               _SourceButton(
                 icon: Icons.table_chart_outlined,
@@ -158,12 +167,11 @@ class ImportScreen extends StatelessWidget {
               ),
               if (session.step == ImportStep.error) ...[
                 const SizedBox(height: 8),
-                Card(
-                  color: Theme.of(context).colorScheme.errorContainer,
-                  child: Padding(
-                    padding: const EdgeInsets.all(14),
-                    child: Text(session.errorMessage ?? ''),
-                  ),
+                ImportErrorRecovery(
+                  message: session.errorMessage ?? 'حدث خطأ غير متوقع.',
+                  onRetry: session.canRetry ? () => _retry(context) : null,
+                  onManualEntry: () => _manualEntry(context),
+                  onCancel: () => session.reset(),
                 ),
               ],
             ],

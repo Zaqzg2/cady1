@@ -7,6 +7,8 @@ import '../models/import_models.dart';
 import '../services/excel_import_service.dart';
 import '../services/fuzzy_matching_service.dart';
 import '../services/image_import_service.dart';
+import '../services/import_router.dart';
+import '../services/incoming_file_service.dart';
 import '../services/ocr_service.dart';
 import '../services/pdf_import_service.dart';
 
@@ -34,6 +36,17 @@ class ImportSessionProvider extends ChangeNotifier {
   List<List<String>> _rawTable = [];
   int _headerRowIndex = 0;
 
+  /// آخر محاولة استيراد قابلة للإعادة (زر [إعادة المحاولة] — قسم ٢). تُضبط
+  /// داخل كل دالة استيراد قبل التنفيذ، فتُعيد نفس البيانات بلا حاجة للشاشة
+  /// لحفظ أي شيء بنفسها.
+  Future<void> Function()? _retry;
+  bool get canRetry => _retry != null;
+
+  Future<void> retryLastImport() async {
+    final retry = _retry;
+    if (retry != null) await retry();
+  }
+
   void reset() {
     step = ImportStep.idle;
     errorMessage = null;
@@ -54,6 +67,34 @@ class ImportSessionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ---------------- استيراد موجَّه (Share Sheet / Open With) ----------------
+
+  final ImportRouter _router = const ImportRouter();
+
+  /// نقطة الدخول الموحّدة الوحيدة لأي ملف وارد من خارج شاشة الاستيراد
+  /// العادية — تحدّد النوع ثم تستدعي بالضبط نفس دوال الاستيراد أعلاه
+  /// (Excel/CSV، PDF، صورة). لا يوجد أي منطق استيراد منفصل لملفات
+  /// المشاركة (قسم ١٤: ImportService.importFile موحَّد لكل المصادر).
+  Future<void> importRoutedFile(
+    IncomingFile file,
+    OcrEngine engine,
+    List<Product> existingProducts,
+  ) async {
+    switch (_router.classify(fileName: file.fileName, mimeType: file.mimeType)) {
+      case RoutedFileType.excel:
+      case RoutedFileType.csv:
+        await importExcelOrCsv(file.bytes, file.fileName, existingProducts);
+      case RoutedFileType.pdf:
+        await importPdfBytes(file.bytes, file.fileName, engine, existingProducts);
+      case RoutedFileType.image:
+        await importImageBytes(file.bytes, file.fileName, engine, existingProducts);
+      case RoutedFileType.unsupported:
+        reset();
+        fileName = file.fileName;
+        _fail('نوع هذا الملف غير مدعوم للاستيراد. الأنواع المدعومة: Excel، CSV، PDF، أو صورة (jpg/png/webp).');
+    }
+  }
+
   // ---------------- Excel / CSV ----------------
 
   Future<void> importExcelOrCsv(
@@ -62,6 +103,7 @@ class ImportSessionProvider extends ChangeNotifier {
     List<Product> existingProducts,
   ) async {
     reset();
+    _retry = () => importExcelOrCsv(bytes, name, existingProducts);
     sourceType = ImportSourceType.excel;
     fileName = name;
     step = ImportStep.processing;
@@ -104,6 +146,7 @@ class ImportSessionProvider extends ChangeNotifier {
     List<Product> existingProducts,
   ) async {
     reset();
+    _retry = () => importImageBytes(rawBytes, name, engine, existingProducts);
     sourceType = ImportSourceType.image;
     fileName = name;
     step = ImportStep.processing;
@@ -134,6 +177,7 @@ class ImportSessionProvider extends ChangeNotifier {
     List<Product> existingProducts,
   ) async {
     reset();
+    _retry = () => importPdfBytes(pdfBytes, name, engine, existingProducts);
     sourceType = ImportSourceType.pdf;
     fileName = name;
     step = ImportStep.processing;
@@ -257,6 +301,28 @@ class ImportSessionProvider extends ChangeNotifier {
     if (row.isEmpty) return;
     row.first.matchedProductId = null;
     row.first.forceNewProduct = true;
+    notifyListeners();
+  }
+
+  // ---------------- إدخال يدوي (بلا ملف/OCR — قسم ٢) ----------------
+
+  /// يبدأ جلسة إدخال يدوي فارغة تمامًا — مسار بديل حين يتعذّر OCR (زر
+  /// [إدخال يدوي])، أو أي وقت آخر يريد فيه المستخدم إضافة صنف بلا ملف إطلاقًا.
+  void startManualEntry({String name = 'إدخال يدوي'}) {
+    reset();
+    sourceType = ImportSourceType.manual;
+    fileName = name;
+    step = ImportStep.review;
+    notifyListeners();
+  }
+
+  void addBlankRow() {
+    rows.add(ExtractedRow(cells: []));
+    notifyListeners();
+  }
+
+  void removeRow(String rowId) {
+    rows.removeWhere((r) => r.id == rowId);
     notifyListeners();
   }
 

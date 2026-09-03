@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/import_models.dart';
+import 'api_health_service.dart';
 
 class OcrExtractionResult {
   final bool success;
@@ -41,6 +43,7 @@ class AiVisionOcrEngine implements OcrEngine {
   final String apiKey;
   final String apiBaseUrl;
   final String model;
+  final ApiHealthService _apiHealth;
 
   AiVisionOcrEngine({
     required this.apiKey,
@@ -48,7 +51,8 @@ class AiVisionOcrEngine implements OcrEngine {
     // ملاحظة: تحقق من نموذج الرؤية الحالي في وثائق مزوّدك قبل الاستخدام،
     // فأسماء النماذج تتغيّر بمرور الوقت.
     this.model = 'claude-sonnet-5',
-  });
+    ApiHealthService? apiHealthService,
+  }) : _apiHealth = apiHealthService ?? const ApiHealthService();
 
   @override
   Future<OcrExtractionResult> extractTable(
@@ -56,14 +60,15 @@ class AiVisionOcrEngine implements OcrEngine {
     String? contextHint,
   }) async {
     if (apiKey.trim().isEmpty) {
-      return OcrExtractionResult.failure(
-        'لم يتم ضبط مفتاح خدمة الاستخراج الذكي بعد. أضفه من الإعدادات، أو استخدم استيراد Excel/CSV الذي يعمل بلا إنترنت.',
-      );
+      // خط دفاع إضافي فقط — عمليًا SettingsProvider.buildOcrEngine() لا يبني
+      // هذا المحرك أصلًا بلا مفتاح (يُعيد UnavailableOcrEngine بدلًا منه).
+      return OcrExtractionResult.failure(_apiHealth.messageFor(ApiKeyStatus.noKey));
     }
 
+    http.Response response;
     try {
       final base64Image = base64Encode(imageBytes);
-      final response = await http
+      response = await http
           .post(
             Uri.parse(apiBaseUrl),
             headers: {
@@ -93,13 +98,19 @@ class AiVisionOcrEngine implements OcrEngine {
             }),
           )
           .timeout(const Duration(seconds: 90));
+    } catch (e) {
+      // أي فشل اتصال هنا (شبكة/مهلة/غيره) يُصنَّف بنفس منظومة الحالات
+      // المستخدمة في اختبار المفتاح بالإعدادات — رسالة عربية متسقة، بلا أي
+      // SocketException/ClientException خام يصل المستخدم (قسم ١٥).
+      return OcrExtractionResult.failure(_apiHealth.classifyException(e).messageAr);
+    }
 
-      if (response.statusCode != 200) {
-        return OcrExtractionResult.failure(
-          'فشل الاتصال بخدمة الاستخراج (رمز ${response.statusCode}). تحقّق من مفتاح API وحصتك المتاحة.',
-        );
-      }
+    final health = _apiHealth.classifyHttpResponse(response);
+    if (health.status != ApiKeyStatus.valid) {
+      return OcrExtractionResult.failure(health.messageAr);
+    }
 
+    try {
       final decoded = jsonDecode(utf8.decode(response.bodyBytes));
       final contentBlocks = (decoded['content'] as List?) ?? [];
       final buffer = StringBuffer();
@@ -119,12 +130,13 @@ class AiVisionOcrEngine implements OcrEngine {
         );
       }
       return OcrExtractionResult.success(rows);
-    } on TimeoutException {
-      return OcrExtractionResult.failure('انتهت مهلة الاتصال. تحقق من الإنترنت وأعد المحاولة.');
     } catch (e) {
-      // أي فشل هنا (شبكة/تحليل JSON/غيره) يُعاد كنتيجة فشل واضحة بدل أن يختفي
-      // بصمت — بنفس روح الدرس السابع في دليل الأعطال (لا Exceptions غير ممسوكة).
-      return OcrExtractionResult.failure('تعذّر استخراج البيانات من الصورة: $e');
+      // نجح الاتصال (٢٠٠) لكن فشل تحليل الناتج (JSON غير متوقع مثلاً) — هذا
+      // ليس خطأ شبكة/مفتاح، بل محتوى غير متوقع من النموذج نفسه.
+      debugPrint('AiVisionOcrEngine: فشل تحليل الاستجابة: $e');
+      return OcrExtractionResult.failure(
+        'وصلت استجابة من خدمة AI لكن تعذّر فهم محتواها. جرّب مرة أخرى، أو استخدم استيراد Excel/CSV.',
+      );
     }
   }
 
