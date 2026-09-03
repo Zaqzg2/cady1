@@ -34,7 +34,9 @@ import sys
 import urllib.parse
 import urllib.request
 
-MIN_COMPILE_SDK = 36
+# يُبقى متزامنًا يدويًا مع compileSdk في android/app/build.gradle.kts — رُفع
+# من 36 إلى 37 لأن receive_sharing_intent يتطلب 37+ فعليًا.
+MIN_COMPILE_SDK = 37
 PACKAGE_CONFIG_PATH = os.path.join(".dart_tool", "package_config.json")
 LOG_PATH = "compile_sdk_patch_log.txt"
 
