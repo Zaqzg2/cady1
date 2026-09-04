@@ -1,5 +1,5 @@
 name: inventory_analyzer
-description: "محلل المخزون والتقارير الذكي"
+description: "محلل المخزون الذكي — إدارة وتحليل مخزون offline-first"
 publish_to: 'none'
 version: 0.1.0+1
 
@@ -51,12 +51,6 @@ dependencies:
   # استخراج البيانات من الصور/PDF عبر نموذج ذكاء اصطناعي متعدد الوسائط (اختياري، أونلاين فقط وقت الاستيراد)
   http: ^1.2.2
   flutter_secure_storage: ">=9.0.0 <11.0.0"
-
-  # استقبال الملفات من Share Sheet / Open With على أندرويد (وiOS مجانًا معها).
-  # أندرويد/iOS فقط — لا تدعم الويب، لذلك كل استخدام لها في lib/ محاط بـ
-  # conditional import (راجع incoming_file_service.dart) بحيث لا يدخل أي كود
-  # يعتمد عليها في حزمة بناء الويب أصلًا، فلا خطر على flutter build web.
-  receive_sharing_intent: ">=1.9.0 <2.0.0"
 
   # أدوات عامة
   # ⚠️ قيد متعمَّد الاتساع: flutter_localizations (من SDK نفسه) يفرض إصدار

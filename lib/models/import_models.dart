@@ -2,24 +2,29 @@ import 'package:uuid/uuid.dart';
 
 const _uuid = Uuid();
 
-enum ImportSourceType { excel, pdf, image, camera, manual }
+enum ImportSourceType { excel, csv, pdf, image, camera }
 
 extension ImportSourceTypeLabel on ImportSourceType {
   String get labelAr => switch (this) {
         ImportSourceType.excel => 'ملف Excel',
+        ImportSourceType.csv => 'ملف CSV',
         ImportSourceType.pdf => 'ملف PDF',
         ImportSourceType.image => 'صورة',
         ImportSourceType.camera => 'تصوير مستند',
-        ImportSourceType.manual => 'إدخال يدوي',
       };
 }
 
-/// نوع الحقل الذي يمثله عمود أو قيمة مستخرجة
+/// نوع الحقل الذي يمثله عمود أو قيمة مستخرجة.
+///
+/// ⚠️ عمدًا لا يوجد هنا أي حقل سعر (شراء/بيع) — هذه البيانات مُلغاة صراحة من
+/// النظام (القسمان 4 و35). `sales`/`returns` كمّيتان بحتتان (بلا سعر مرتبط)
+/// وتُترجَمان لاحقًا لحركتَي "صرف"/"مرتجع" في محرك المخزون (القسم 7).
 enum FieldType {
   productName,
+  itemNumber,
+  barcode,
+  unit,
   quantity,
-  price,
-  salePrice,
   sales,
   returns,
   productionDate,
@@ -33,11 +38,12 @@ enum FieldType {
 extension FieldTypeLabel on FieldType {
   String get labelAr => switch (this) {
         FieldType.productName => 'الصنف',
+        FieldType.itemNumber => 'رقم الصنف',
+        FieldType.barcode => 'Barcode',
+        FieldType.unit => 'الوحدة',
         FieldType.quantity => 'الكمية',
-        FieldType.price => 'سعر الشراء',
-        FieldType.salePrice => 'سعر البيع',
-        FieldType.sales => 'المبيعات',
-        FieldType.returns => 'المرتجع',
+        FieldType.sales => 'الصرف/المبيعات (كمية)',
+        FieldType.returns => 'المرتجع (كمية)',
         FieldType.productionDate => 'تاريخ الإنتاج',
         FieldType.expiryDate => 'تاريخ الانتهاء',
         FieldType.branch => 'الفرع',
@@ -125,6 +131,10 @@ class ExtractedRow {
 
   RowReviewStatus status;
 
+  /// رسائل تحقق (Validation) اكتُشفت لهذا السطر — القسم 22. لا تمنع الاعتماد
+  /// وحدها لكنها تُعرض بوضوح ليقرر المستخدم.
+  List<String> validationIssues;
+
   ExtractedRow({
     String? id,
     required this.cells,
@@ -134,7 +144,9 @@ class ExtractedRow {
     this.matchScore,
     this.forceNewProduct = false,
     this.status = RowReviewStatus.pending,
-  }) : id = id ?? _uuid.v4();
+    List<String>? validationIssues,
+  })  : id = id ?? _uuid.v4(),
+        validationIssues = validationIssues ?? [];
 
   ExtractedCell? cellOf(FieldType type) =>
       cells.where((c) => c.fieldType == type).firstOrNull;
@@ -156,6 +168,7 @@ class ExtractedRow {
         'matchScore': matchScore,
         'forceNewProduct': forceNewProduct,
         'status': status.name,
+        'validationIssues': validationIssues,
       };
 
   factory ExtractedRow.fromMap(Map<dynamic, dynamic> map) => ExtractedRow(
@@ -172,6 +185,8 @@ class ExtractedRow {
           (s) => s.name == map['status'],
           orElse: () => RowReviewStatus.pending,
         ),
+        validationIssues:
+            (map['validationIssues'] as List?)?.map((e) => e.toString()).toList() ?? const [],
       );
 }
 

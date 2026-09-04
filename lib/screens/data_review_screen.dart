@@ -36,7 +36,6 @@ class DataReviewScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final session = context.watch<ImportSessionProvider>();
-    final isManual = session.sourceType == ImportSourceType.manual;
 
     return Scaffold(
       appBar: AppBar(title: Text('مراجعة البيانات (${session.rows.length})')),
@@ -50,6 +49,17 @@ class DataReviewScreen extends StatelessWidget {
               child: const Text(
                 'الملف طويل — تمت معالجة أول عدد محدود من الصفحات فقط.',
                 style: TextStyle(fontSize: 12.5),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          if (session.issuesCount > 0)
+            Container(
+              width: double.infinity,
+              color: Theme.of(context).colorScheme.tertiaryContainer,
+              padding: const EdgeInsets.all(10),
+              child: Text(
+                '${session.issuesCount} من ${session.rows.length} صفًا عليها ملاحظات تحقّق — راجعها قبل الاعتماد.',
+                style: const TextStyle(fontSize: 12.5),
                 textAlign: TextAlign.center,
               ),
             ),
@@ -73,29 +83,13 @@ class DataReviewScreen extends StatelessWidget {
               ],
             ),
           ),
-          if (isManual)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-              child: SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: () => context.read<ImportSessionProvider>().addBlankRow(),
-                  icon: const Icon(Icons.add_rounded),
-                  label: const Text('إضافة سطر'),
-                ),
-              ),
-            ),
           Expanded(
             child: session.rows.isEmpty
-                ? EmptyState(
-                    icon: Icons.inbox_outlined,
-                    title: isManual ? 'لا توجد أسطر بعد — اضغط "إضافة سطر" لتبدأ' : 'لا توجد بيانات مستخرجة',
-                  )
+                ? const EmptyState(icon: Icons.inbox_outlined, title: 'لا توجد بيانات مستخرجة')
                 : ListView.builder(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
                     itemCount: session.rows.length,
-                    itemBuilder: (context, i) =>
-                        _ReviewRowCard(row: session.rows[i], index: i, isManualEntry: isManual),
+                    itemBuilder: (context, i) => _ReviewRowCard(row: session.rows[i], index: i),
                   ),
           ),
         ],
@@ -116,8 +110,7 @@ class DataReviewScreen extends StatelessWidget {
 class _ReviewRowCard extends StatelessWidget {
   final ExtractedRow row;
   final int index;
-  final bool isManualEntry;
-  const _ReviewRowCard({required this.row, required this.index, this.isManualEntry = false});
+  const _ReviewRowCard({required this.row, required this.index});
 
   void _editCell(BuildContext context, FieldType field) async {
     final cell = row.cellOf(field);
@@ -159,33 +152,12 @@ class _ReviewRowCard extends StatelessWidget {
     );
   }
 
-  Widget _field(BuildContext context, String label, ExtractedCell? cell, FieldType field) {
-    if (cell != null) {
-      return _EditableRowField(label: label, cell: cell, onTap: () => _editCell(context, field));
-    }
-    if (!isManualEntry) return const SizedBox.shrink();
-    // في الإدخال اليدوي فقط: نعرض حقول لم تُملأ بعد كخيار "إضافة" واضح،
-    // حتى يبني المستخدم السطر من الصفر دون ملف أو OCR (قسم ٢).
-    return InkWell(
-      onTap: () => _editCell(context, field),
-      borderRadius: BorderRadius.circular(8),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6),
-        child: Row(
-          children: [
-            SizedBox(width: 78, child: Text(label, style: const TextStyle(color: Colors.grey, fontSize: 12.5))),
-            const Icon(Icons.add_circle_outline_rounded, size: 16, color: Colors.grey),
-            const SizedBox(width: 6),
-            const Text('إضافة', style: TextStyle(color: Colors.grey, fontSize: 12.5)),
-          ],
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final nameCell = row.cellOf(FieldType.productName);
+    final itemNumberCell = row.cellOf(FieldType.itemNumber);
+    final barcodeCell = row.cellOf(FieldType.barcode);
+    final unitCell = row.cellOf(FieldType.unit);
     final quantityCell = row.cellOf(FieldType.quantity);
     final expiryCell = row.cellOf(FieldType.expiryDate);
     final productionCell = row.cellOf(FieldType.productionDate);
@@ -220,18 +192,15 @@ class _ReviewRowCard extends StatelessWidget {
                   Text('#${index + 1}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
                   const Spacer(),
                   ConfidenceBadge(confidence: row.overallConfidence),
-                  if (isManualEntry) ...[
-                    const SizedBox(width: 4),
-                    IconButton(
-                      visualDensity: VisualDensity.compact,
-                      icon: const Icon(Icons.delete_outline_rounded, size: 19, color: Colors.grey),
-                      onPressed: () => context.read<ImportSessionProvider>().removeRow(row.id),
-                    ),
-                  ],
                 ],
               ),
               const SizedBox(height: 6),
-              _field(context, 'الصنف', nameCell, FieldType.productName),
+              if (nameCell != null)
+                _EditableRowField(
+                  label: 'الصنف',
+                  cell: nameCell,
+                  onTap: () => _editCell(context, FieldType.productName),
+                ),
               if (showSuggestion) _MatchSuggestionBanner(row: row, onChangeProduct: () => _showProductPicker(context)),
               if (row.matchedProductId != null)
                 Padding(
@@ -248,10 +217,66 @@ class _ReviewRowCard extends StatelessWidget {
                     ],
                   ),
                 ),
-              _field(context, 'الكمية', quantityCell, FieldType.quantity),
-              _field(context, 'الفرع', branchCell, FieldType.branch),
-              _field(context, 'تاريخ الإنتاج', productionCell, FieldType.productionDate),
-              _field(context, 'تاريخ الانتهاء', expiryCell, FieldType.expiryDate),
+              if (quantityCell != null)
+                _EditableRowField(
+                  label: 'الكمية',
+                  cell: quantityCell,
+                  onTap: () => _editCell(context, FieldType.quantity),
+                ),
+              if (itemNumberCell != null)
+                _EditableRowField(
+                  label: 'رقم الصنف',
+                  cell: itemNumberCell,
+                  onTap: () => _editCell(context, FieldType.itemNumber),
+                ),
+              if (barcodeCell != null)
+                _EditableRowField(
+                  label: 'Barcode',
+                  cell: barcodeCell,
+                  onTap: () => _editCell(context, FieldType.barcode),
+                ),
+              if (unitCell != null)
+                _EditableRowField(
+                  label: 'الوحدة',
+                  cell: unitCell,
+                  onTap: () => _editCell(context, FieldType.unit),
+                ),
+              if (branchCell != null)
+                _EditableRowField(
+                  label: 'الفرع',
+                  cell: branchCell,
+                  onTap: () => _editCell(context, FieldType.branch),
+                ),
+              if (productionCell != null)
+                _EditableRowField(
+                  label: 'تاريخ الإنتاج',
+                  cell: productionCell,
+                  onTap: () => _editCell(context, FieldType.productionDate),
+                ),
+              if (expiryCell != null)
+                _EditableRowField(
+                  label: 'تاريخ الانتهاء',
+                  cell: expiryCell,
+                  onTap: () => _editCell(context, FieldType.expiryDate),
+                ),
+              if (row.validationIssues.isNotEmpty)
+                Container(
+                  margin: const EdgeInsets.only(top: 8),
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.errorContainer.withValues(alpha: 0.5),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: row.validationIssues
+                        .map((msg) => Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 1),
+                              child: Text('• $msg', style: const TextStyle(fontSize: 11.5)),
+                            ))
+                        .toList(),
+                  ),
+                ),
               const SizedBox(height: 10),
               Row(
                 children: [

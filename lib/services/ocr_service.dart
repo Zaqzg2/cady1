@@ -2,11 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/import_models.dart';
-import 'api_health_service.dart';
 
 class OcrExtractionResult {
   final bool success;
@@ -22,8 +20,17 @@ class OcrExtractionResult {
       OcrExtractionResult._(success: false, error: error);
 }
 
-/// واجهة محرك استخراج جدول من صورة — أي محرك (سحابي بالذكاء الاصطناعي أو
-/// محلي offline مستقبلًا) يطبّق هذه الواجهة فقط، دون أن تعرف الشاشات نوعه.
+/// واجهة محرك استخراج جدول من صورة (القسم 2 من المواصفة):
+///
+/// ```
+/// OcrEngine
+/// ├── LocalOcrEngine            (على الجهاز، بلا إنترنت)
+/// ├── OptionalCloudOcrEngine    (اختياري، يحتاج مفتاح API)
+/// └── UnavailableOcrEngine      (بديل آمن حين لا يوجد شيء مُفعَّل)
+/// ```
+///
+/// الشاشات لا تعرف أبدًا أي تطبيق يعمل خلف هذه الواجهة — هذا يسمح باستبدال
+/// أي محرك مستقبلًا (القسم 39: Optional Future AI) دون تغيير أي شاشة.
 abstract class OcrEngine {
   Future<OcrExtractionResult> extractTable(
     Uint8List imageBytes, {
@@ -31,28 +38,48 @@ abstract class OcrEngine {
   });
 }
 
-/// محرك يعتمد على نموذج ذكاء اصطناعي متعدد الوسائط (Vision LLM) لقراءة الصورة
-/// مباشرة وإخراج جدول منظّم مع درجة ثقة لكل حقل — هذا هو المسار الموصى به هنا
-/// لأن محركات OCR التقليدية على الجهاز (مثل Google ML Kit) لا تدعم النص
-/// العربي أصلاً، وضعيفة جدًا في الكتابة اليدوية العربية تحديدًا.
+/// محرك استخراج محلي بالكامل (بلا إنترنت، بلا API). القسم 23 من المواصفة
+/// صريح: "لا تجعل OCR شرطًا لتشغيل التطبيق" و"إذا لم يتوفر Local Arabic OCR
+/// موثوق: لا تجعل التطبيق يفشل" — بحسب بحث فعلي (موثّق في README) لا توجد
+/// حزمة Flutter/Dart تقرأ العربية (مطبوعة أو خطًا يدويًا) محليًا بجودة يُعتمد
+/// عليها اليوم؛ لذا هذا التطبيق الحالي لهذا المحرك يُقرّ بذلك بصراحة تامة
+/// للمستخدم بدل الادّعاء بقراءة غير موثوقة، ويوجّهه لبدائل تعمل فورًا.
+/// الواجهة جاهزة لاستبدال هذا التطبيق بمحرك محلي حقيقي متى توفّر مستقبلًا،
+/// بلا أي تغيير في أي شاشة تستخدم [OcrEngine].
+class LocalOcrEngine implements OcrEngine {
+  @override
+  Future<OcrExtractionResult> extractTable(
+    Uint8List imageBytes, {
+    String? contextHint,
+  }) async {
+    return OcrExtractionResult.failure(
+      'التحليل المحلي للصورة غير متاح حاليًا على هذا الجهاز.\n'
+      'يمكنك بدلاً من ذلك: إدخال البيانات يدويًا، أو استيراد ملف Excel/CSV، '
+      'أو تفعيل الاستخراج السحابي الاختياري من الإعدادات.',
+    );
+  }
+}
+
+/// محرك سحابي اختياري (Opt-in) يعتمد على نموذج ذكاء اصطناعي متعدد الوسائط
+/// لقراءة الصورة وإخراج جدول منظّم مع درجة ثقة لكل حقل. اختياري بالكامل: لا
+/// يعمل إلا إذا فعّله المستخدم صراحة وأدخل مفتاح API الخاص به من الإعدادات
+/// (القسمان 23 و38: ليس Dependency أساسية إطلاقًا).
 ///
-/// ⚠️ هذا المحرك يحتاج اتصال إنترنت (فقط أثناء الاستيراد) ومفتاح API. راجع
-/// قسم "الأمان" في README قبل نشر التطبيق للعامة — لا يجوز تضمين المفتاح
-/// مباشرة داخل تطبيق موزَّع دون طبقة وسيطة (Backend Proxy) في الإنتاج.
-class AiVisionOcrEngine implements OcrEngine {
+/// ⚠️ يحتاج اتصال إنترنت (فقط أثناء الاستيراد) ومفتاح API. راجع قسم "الأمان"
+/// في README قبل نشر التطبيق للعامة — لا يجوز تضمين المفتاح مباشرة داخل
+/// تطبيق موزَّع دون طبقة وسيطة (Backend Proxy) في الإنتاج.
+class OptionalCloudOcrEngine implements OcrEngine {
   final String apiKey;
   final String apiBaseUrl;
   final String model;
-  final ApiHealthService _apiHealth;
 
-  AiVisionOcrEngine({
+  OptionalCloudOcrEngine({
     required this.apiKey,
     this.apiBaseUrl = 'https://api.anthropic.com/v1/messages',
     // ملاحظة: تحقق من نموذج الرؤية الحالي في وثائق مزوّدك قبل الاستخدام،
     // فأسماء النماذج تتغيّر بمرور الوقت.
     this.model = 'claude-sonnet-5',
-    ApiHealthService? apiHealthService,
-  }) : _apiHealth = apiHealthService ?? const ApiHealthService();
+  });
 
   @override
   Future<OcrExtractionResult> extractTable(
@@ -60,15 +87,15 @@ class AiVisionOcrEngine implements OcrEngine {
     String? contextHint,
   }) async {
     if (apiKey.trim().isEmpty) {
-      // خط دفاع إضافي فقط — عمليًا SettingsProvider.buildOcrEngine() لا يبني
-      // هذا المحرك أصلًا بلا مفتاح (يُعيد UnavailableOcrEngine بدلًا منه).
-      return OcrExtractionResult.failure(_apiHealth.messageFor(ApiKeyStatus.noKey));
+      return OcrExtractionResult.failure(
+        'لم يتم ضبط مفتاح خدمة الاستخراج السحابي الاختياري بعد. أضفه من الإعدادات، '
+        'أو استخدم استيراد Excel/CSV الذي يعمل بلا إنترنت.',
+      );
     }
 
-    http.Response response;
     try {
       final base64Image = base64Encode(imageBytes);
-      response = await http
+      final response = await http
           .post(
             Uri.parse(apiBaseUrl),
             headers: {
@@ -98,19 +125,13 @@ class AiVisionOcrEngine implements OcrEngine {
             }),
           )
           .timeout(const Duration(seconds: 90));
-    } catch (e) {
-      // أي فشل اتصال هنا (شبكة/مهلة/غيره) يُصنَّف بنفس منظومة الحالات
-      // المستخدمة في اختبار المفتاح بالإعدادات — رسالة عربية متسقة، بلا أي
-      // SocketException/ClientException خام يصل المستخدم (قسم ١٥).
-      return OcrExtractionResult.failure(_apiHealth.classifyException(e).messageAr);
-    }
 
-    final health = _apiHealth.classifyHttpResponse(response);
-    if (health.status != ApiKeyStatus.valid) {
-      return OcrExtractionResult.failure(health.messageAr);
-    }
+      if (response.statusCode != 200) {
+        return OcrExtractionResult.failure(
+          'فشل الاتصال بخدمة الاستخراج (رمز ${response.statusCode}). تحقّق من مفتاح API وحصتك المتاحة.',
+        );
+      }
 
-    try {
       final decoded = jsonDecode(utf8.decode(response.bodyBytes));
       final contentBlocks = (decoded['content'] as List?) ?? [];
       final buffer = StringBuffer();
@@ -130,13 +151,12 @@ class AiVisionOcrEngine implements OcrEngine {
         );
       }
       return OcrExtractionResult.success(rows);
+    } on TimeoutException {
+      return OcrExtractionResult.failure('انتهت مهلة الاتصال. تحقق من الإنترنت وأعد المحاولة.');
     } catch (e) {
-      // نجح الاتصال (٢٠٠) لكن فشل تحليل الناتج (JSON غير متوقع مثلاً) — هذا
-      // ليس خطأ شبكة/مفتاح، بل محتوى غير متوقع من النموذج نفسه.
-      debugPrint('AiVisionOcrEngine: فشل تحليل الاستجابة: $e');
-      return OcrExtractionResult.failure(
-        'وصلت استجابة من خدمة AI لكن تعذّر فهم محتواها. جرّب مرة أخرى، أو استخدم استيراد Excel/CSV.',
-      );
+      // أي فشل هنا (شبكة/تحليل JSON/غيره) يُعاد كنتيجة فشل واضحة بدل أن يختفي
+      // بصمت (القسم 37: لا تعرض Exceptions للمستخدم، لكن سجّلها بوضوح للمطوّر).
+      return OcrExtractionResult.failure('تعذّر استخراج البيانات من الصورة: $e');
     }
   }
 
@@ -150,10 +170,10 @@ Extract every product/line row you can find and return STRICT JSON ONLY (no mark
   "rows": [
     {
       "product_name": {"value": "string in Arabic as written", "confidence": 0-100},
+      "item_number": {"value": "string or null", "confidence": 0-100},
+      "barcode": {"value": "string of digits or null", "confidence": 0-100},
       "quantity": {"value": "number as plain string, Western digits", "confidence": 0-100},
       "unit": {"value": "string or null", "confidence": 0-100},
-      "purchase_price": {"value": "number as plain string or null", "confidence": 0-100},
-      "sale_price": {"value": "number as plain string or null", "confidence": 0-100},
       "sales": {"value": "number as plain string or null", "confidence": 0-100},
       "returns": {"value": "number as plain string or null", "confidence": 0-100},
       "production_date": {"value": "YYYY-MM-DD or null", "confidence": 0-100},
@@ -165,6 +185,7 @@ Extract every product/line row you can find and return STRICT JSON ONLY (no mark
 }
 
 Rules:
+- Do NOT extract or invent any price/cost/monetary value — this application intentionally tracks quantities only, never prices.
 - Omit any field key entirely if that value truly does not appear for that row (do not invent data).
 - confidence must honestly reflect how legible/certain you are — handwriting, blur, or ambiguity should lower it a lot (below 60 if you are genuinely guessing).
 - Always use Western digits (0-9) in values, never Arabic-Indic digits.
@@ -187,9 +208,10 @@ Rules:
 
   static const _fieldKeyToType = {
     'product_name': FieldType.productName,
+    'item_number': FieldType.itemNumber,
+    'barcode': FieldType.barcode,
     'quantity': FieldType.quantity,
-    'purchase_price': FieldType.price,
-    'sale_price': FieldType.salePrice,
+    'unit': FieldType.unit,
     'sales': FieldType.sales,
     'returns': FieldType.returns,
     'production_date': FieldType.productionDate,
@@ -233,13 +255,13 @@ Rules:
   }
 }
 
-/// محرك احتياطي يُستخدم عندما لا يوجد مفتاح API مضبوط، ليعطي رسالة واضحة
-/// بدل رمي استثناء أو تعليق الواجهة على شاشة تحميل بلا تفسير.
+/// بديل آمن حين لا يوجد أي محرك مُفعَّل إطلاقًا — يعطي رسالة واضحة بدل رمي
+/// استثناء أو تعليق الواجهة على شاشة تحميل بلا تفسير.
 class UnavailableOcrEngine implements OcrEngine {
   @override
   Future<OcrExtractionResult> extractTable(Uint8List imageBytes, {String? contextHint}) async {
     return OcrExtractionResult.failure(
-      'محرك الاستخراج الذكي غير مُفعَّل. اذهب إلى الإعدادات وأضف مفتاح API، أو استورد بيانات من Excel/CSV بدلًا من ذلك.',
+      'تحليل الصور غير مُفعَّل حاليًا. يمكنك إدخال البيانات يدويًا أو استيراد ملف Excel/CSV.',
     );
   }
 }

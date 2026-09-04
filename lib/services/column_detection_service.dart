@@ -14,6 +14,23 @@ class ColumnDetectionService {
       'الوصف',
       'اسم السلعة',
     ],
+    FieldType.itemNumber: [
+      'رقم الصنف',
+      'كود الصنف',
+      'رقم المنتج',
+      'الرقم',
+    ],
+    FieldType.barcode: [
+      'باركود',
+      'الباركود',
+      'barcode',
+      'الرمز الشريطي',
+    ],
+    FieldType.unit: [
+      'الوحدة',
+      'وحدة',
+      'وحدة القياس',
+    ],
     FieldType.quantity: [
       'الكمية',
       'الرصيد',
@@ -22,20 +39,12 @@ class ColumnDetectionService {
       'رصيد',
       'الكمية الحالية',
     ],
-    FieldType.price: [
-      'سعر الشراء',
-      'التكلفة',
-      'سعر التكلفة',
-      'سعر',
-    ],
-    FieldType.salePrice: [
-      'سعر البيع',
-      'سعر بيع',
-    ],
     FieldType.sales: [
       'المبيعات',
       'مبيعات',
       'كمية البيع',
+      'الصرف',
+      'كمية الصرف',
     ],
     FieldType.returns: [
       'المرتجع',
