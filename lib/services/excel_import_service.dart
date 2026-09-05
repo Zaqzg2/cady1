@@ -192,8 +192,6 @@ class ExcelImportService {
   double _estimateConfidence(FieldType type, String raw) {
     switch (type) {
       case FieldType.quantity:
-      case FieldType.price:
-      case FieldType.salePrice:
       case FieldType.sales:
       case FieldType.returns:
         return ArabicTextUtils.tryParseNumber(raw) != null ? 0.98 : 0.40;

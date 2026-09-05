@@ -2,24 +2,29 @@ import 'package:uuid/uuid.dart';
 
 const _uuid = Uuid();
 
-enum ImportSourceType { excel, pdf, image, camera, manual }
+enum ImportSourceType { excel, csv, pdf, image, camera }
 
 extension ImportSourceTypeLabel on ImportSourceType {
   String get labelAr => switch (this) {
         ImportSourceType.excel => 'ملف Excel',
+        ImportSourceType.csv => 'ملف CSV',
         ImportSourceType.pdf => 'ملف PDF',
         ImportSourceType.image => 'صورة',
         ImportSourceType.camera => 'تصوير مستند',
-        ImportSourceType.manual => 'إدخال يدوي',
       };
 }
 
-/// نوع الحقل الذي يمثله عمود أو قيمة مستخرجة
+/// نوع الحقل الذي يمثله عمود أو قيمة مستخرجة.
+///
+/// ⚠️ عمدًا لا يوجد هنا أي حقل سعر (شراء/بيع) — هذه البيانات مُلغاة صراحة من
+/// النظام (القسمان 4 و35). `sales`/`returns` كمّيتان بحتتان (بلا سعر مرتبط)
+/// وتُترجَمان لاحقًا لحركتَي "صرف"/"مرتجع" في محرك المخزون (القسم 7).
 enum FieldType {
   productName,
+  itemNumber,
+  barcode,
+  unit,
   quantity,
-  price,
-  salePrice,
   sales,
   returns,
   productionDate,
@@ -33,11 +38,12 @@ enum FieldType {
 extension FieldTypeLabel on FieldType {
   String get labelAr => switch (this) {
         FieldType.productName => 'الصنف',
+        FieldType.itemNumber => 'رقم الصنف',
+        FieldType.barcode => 'Barcode',
+        FieldType.unit => 'الوحدة',
         FieldType.quantity => 'الكمية',
-        FieldType.price => 'سعر الشراء',
-        FieldType.salePrice => 'سعر البيع',
-        FieldType.sales => 'المبيعات',
-        FieldType.returns => 'المرتجع',
+        FieldType.sales => 'الصرف/المبيعات (كمية)',
+        FieldType.returns => 'المرتجع (كمية)',
         FieldType.productionDate => 'تاريخ الإنتاج',
         FieldType.expiryDate => 'تاريخ الانتهاء',
         FieldType.branch => 'الفرع',
@@ -66,12 +72,6 @@ class ExtractedCell {
   /// 0.0 - 1.0
   double confidence;
 
-  /// null = قيمة ثقة حقيقية (من Mistral أو تصحيح يدوي). 'unavailable' = لا
-  /// يوفّر المصدر (OCR.space) ثقة فعلية لكل حقل — [confidence] هنا قيمة
-  /// افتراضية محافِظة فقط للفرز/التلوين، وتُعرض "الثقة غير متاحة" بدلًا من
-  /// نسبة مختلَقة في شاشة المراجعة (قسم ١٢ من مواصفة الدمج: لا تخترع ثقة وهمية).
-  String? confidenceSource;
-
   int? pageNumber;
   int? rowNumber;
   int? columnNumber;
@@ -80,7 +80,6 @@ class ExtractedCell {
     required this.fieldType,
     required this.value,
     required this.confidence,
-    this.confidenceSource,
     this.pageNumber,
     this.rowNumber,
     this.columnNumber,
@@ -92,7 +91,6 @@ class ExtractedCell {
         'fieldType': fieldType.name,
         'value': value,
         'confidence': confidence,
-        'confidenceSource': confidenceSource,
         'pageNumber': pageNumber,
         'rowNumber': rowNumber,
         'columnNumber': columnNumber,
@@ -105,7 +103,6 @@ class ExtractedCell {
         ),
         value: map['value'] as String? ?? '',
         confidence: (map['confidence'] as num?)?.toDouble() ?? 0,
-        confidenceSource: map['confidenceSource'] as String?,
         pageNumber: map['pageNumber'] as int?,
         rowNumber: map['rowNumber'] as int?,
         columnNumber: map['columnNumber'] as int?,
@@ -134,6 +131,10 @@ class ExtractedRow {
 
   RowReviewStatus status;
 
+  /// رسائل تحقق (Validation) اكتُشفت لهذا السطر — القسم 22. لا تمنع الاعتماد
+  /// وحدها لكنها تُعرض بوضوح ليقرر المستخدم.
+  List<String> validationIssues;
+
   ExtractedRow({
     String? id,
     required this.cells,
@@ -143,7 +144,9 @@ class ExtractedRow {
     this.matchScore,
     this.forceNewProduct = false,
     this.status = RowReviewStatus.pending,
-  }) : id = id ?? _uuid.v4();
+    List<String>? validationIssues,
+  })  : id = id ?? _uuid.v4(),
+        validationIssues = validationIssues ?? [];
 
   ExtractedCell? cellOf(FieldType type) =>
       cells.where((c) => c.fieldType == type).firstOrNull;
@@ -156,13 +159,6 @@ class ExtractedRow {
     return relevant.map((c) => c.confidence).reduce((a, b) => a < b ? a : b);
   }
 
-  /// true عندما لا يوفّر مصدر هذا الصف (OCR.space) ثقة حقيقية لأي حقل فيه —
-  /// راجع تعليق [ExtractedCell.confidenceSource].
-  bool get confidenceUnavailable {
-    final relevant = cells.where((c) => c.fieldType != FieldType.ignore).toList();
-    return relevant.isNotEmpty && relevant.every((c) => c.confidenceSource == 'unavailable');
-  }
-
   Map<String, dynamic> toMap() => {
         'id': id,
         'cells': cells.map((c) => c.toMap()).toList(),
@@ -172,6 +168,7 @@ class ExtractedRow {
         'matchScore': matchScore,
         'forceNewProduct': forceNewProduct,
         'status': status.name,
+        'validationIssues': validationIssues,
       };
 
   factory ExtractedRow.fromMap(Map<dynamic, dynamic> map) => ExtractedRow(
@@ -188,6 +185,8 @@ class ExtractedRow {
           (s) => s.name == map['status'],
           orElse: () => RowReviewStatus.pending,
         ),
+        validationIssues:
+            (map['validationIssues'] as List?)?.map((e) => e.toString()).toList() ?? const [],
       );
 }
 
@@ -217,12 +216,6 @@ class ImportRecord {
   int rawRowCount;
   int acceptedRowCount;
 
-  /// اسم محرك OCR الذي أنتج هذه البيانات (مثلًا 'mistral' أو 'ocr_space') —
-  /// null لما لا علاقة له بـ OCR أصلًا (Excel/يدوي). يُعرض في مؤشر المصدر
-  /// بشاشة المراجعة (القسم ٢٤ من مواصفة الدمج، القسم ٢٢ من مواصفة Mistral).
-  String? ocrProvider;
-  String? ocrModel;
-
   ImportRecord({
     String? id,
     required this.sourceType,
@@ -230,8 +223,6 @@ class ImportRecord {
     DateTime? importedAt,
     this.rawRowCount = 0,
     this.acceptedRowCount = 0,
-    this.ocrProvider,
-    this.ocrModel,
   })  : id = id ?? _uuid.v4(),
         importedAt = importedAt ?? DateTime.now();
 
@@ -242,8 +233,6 @@ class ImportRecord {
         'importedAt': importedAt.toIso8601String(),
         'rawRowCount': rawRowCount,
         'acceptedRowCount': acceptedRowCount,
-        'ocrProvider': ocrProvider,
-        'ocrModel': ocrModel,
       };
 
   factory ImportRecord.fromMap(Map<dynamic, dynamic> map) => ImportRecord(
@@ -257,7 +246,5 @@ class ImportRecord {
             DateTime.now(),
         rawRowCount: map['rawRowCount'] as int? ?? 0,
         acceptedRowCount: map['acceptedRowCount'] as int? ?? 0,
-        ocrProvider: map['ocrProvider'] as String?,
-        ocrModel: map['ocrModel'] as String?,
       );
 }

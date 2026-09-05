@@ -1,11 +1,11 @@
 {
-    "name": "محلل المخزون والتقارير الذكي",
+    "name": "محلل المخزون الذكي",
     "short_name": "محلل المخزون",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#FFFFFF",
     "theme_color": "#0F6B5C",
-    "description": "تطبيق لإدارة وتحليل بيانات المخزون والمبيعات والكشوف",
+    "description": "تطبيق ذكي لإدارة وتحليل المخزون والجرد والأهداف والمشتريات، يعمل بالكامل offline",
     "orientation": "portrait-primary",
     "dir": "rtl",
     "lang": "ar",
