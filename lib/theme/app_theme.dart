@@ -15,18 +15,6 @@ class AppColors {
   static const expiryWithin30 = Color(0xFFEF6C00);
   static const expiryWithin60 = Color(0xFFF9A825);
   static const expirySafe = Color(0xFF2E7D32);
-
-  // حالة توفر المخزون (القسم 8): 🟢 متوفر، 🟡 منخفض، 🔴 صفر مخزون
-  static const stockAvailable = Color(0xFF2E7D32);
-  static const stockLow = Color(0xFFF9A825);
-  static const stockOut = Color(0xFFC62828);
-
-  // حالة طلب الشراء (القسم 14)
-  static const purchaseDraft = Color(0xFF757575);
-  static const purchaseRequested = Color(0xFF1565C0);
-  static const purchasePartial = Color(0xFFEF6C00);
-  static const purchaseCompleted = Color(0xFF2E7D32);
-  static const purchaseCancelled = Color(0xFFC62828);
 }
 
 class AppTheme {

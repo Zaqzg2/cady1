@@ -17,13 +17,18 @@ android {
     // ⚠️ غيّر هذا لاسم الحزمة الفعلي لتطبيقك قبل النشر على المتاجر
     namespace = "com.example.inventory_analyzer"
 
-    // ثابت يدويًا على 36 (وليس flutter.compileSdkVersion) — هذا بالضبط ما
-    // وثّقه القسم 3 من دليل الأعطال: القيمة الافتراضية المضمّنة في Flutter قد
-    // تكون أقل مما تحتاجه بعض الحزم (flutter_plugin_android_lifecycle وما
-    // يعتمد عليها مثل file_picker وimage_picker). سكربت tool/patch_compile_sdk.py
-    // يعالج نفس المشكلة داخل الحزم الخارجية في pub-cache؛ هذا السطر يعالجها
-    // في وحدة التطبيق نفسها من الأساس.
-    compileSdk = 36
+    // ثابت يدويًا (وليس flutter.compileSdkVersion) — هذا بالضبط ما وثّقه
+    // القسم 3 من دليل الأعطال: القيمة الافتراضية المضمّنة في Flutter قد تكون
+    // أقل مما تحتاجه بعض الحزم. سكربت tool/patch_compile_sdk.py يعالج نفس
+    // المشكلة داخل الحزم الخارجية في pub-cache؛ هذا السطر يعالجها في وحدة
+    // التطبيق نفسها من الأساس.
+    // ✅ مُصحَّح فعليًا بناءً على خطأ CI حقيقي بتاريخ 2026-09-03: رُفع من 36
+    // إلى 37 لأن receive_sharing_intent (المُضافة لدعم Share/Open With — قسم
+    // 3-7) تتطلب compileSdk 37+ فعليًا — فشلت :app:checkReleaseAarMetadata
+    // بهذا بالضبط عند 36 (راجع رسالة الخطأ الكاملة في نص الطلب وقتها).
+    // حدّث MIN_COMPILE_SDK في tool/patch_compile_sdk.py بالتوازي مع أي رفع
+    // مستقبلي لهذا الرقم.
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

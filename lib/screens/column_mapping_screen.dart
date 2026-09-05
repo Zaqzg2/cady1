@@ -5,7 +5,6 @@ import '../models/import_models.dart';
 import '../providers/import_session_provider.dart';
 import '../providers/inventory_provider.dart';
 import 'data_review_screen.dart';
-import 'table_editor_screen.dart';
 
 class ColumnMappingScreen extends StatefulWidget {
   const ColumnMappingScreen({super.key});
@@ -30,23 +29,9 @@ class _ColumnMappingScreenState extends State<ColumnMappingScreen> {
 
   void _confirm() {
     final session = context.read<ImportSessionProvider>();
-    final inv = context.read<InventoryProvider>();
-    session.applyManualColumnMapping(_mappings, inv.products, inv.branches, inv.categories);
+    final products = context.read<InventoryProvider>().products;
+    session.applyManualColumnMapping(_mappings, products);
     Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const DataReviewScreen()));
-  }
-
-  Future<void> _openTableEditor() async {
-    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const TableEditorScreen()));
-    if (!mounted) return;
-    // بعد أي تعديل في محرر الجدول تُعاد قراءة التعيين الحالي من الجلسة
-    setState(() {
-      _mappings = context
-          .read<ImportSessionProvider>()
-          .columnMappings
-          .map((m) =>
-              ColumnMapping(columnIndex: m.columnIndex, header: m.header, mappedField: m.mappedField))
-          .toList();
-    });
   }
 
   @override
@@ -56,27 +41,13 @@ class _ColumnMappingScreenState extends State<ColumnMappingScreen> {
     final canContinue = hasProduct && hasQuantity;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('تحديد الأعمدة'),
-        actions: [
-          IconButton(
-            tooltip: 'تعديل الجدول الخام',
-            icon: const Icon(Icons.table_rows_outlined),
-            onPressed: _openTableEditor,
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('تحديد الأعمدة')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           const Text(
             'لم نتمكّن من تحديد بعض الأعمدة تلقائيًا. اختر ما يمثله كل عمود:',
             style: TextStyle(fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'يمكنك أيضًا فتح "محرر الجدول" من الأعلى لتصحيح الصفوف/الأعمدة نفسها قبل التعيين.',
-            style: TextStyle(fontSize: 12.5, color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
           const SizedBox(height: 16),
           ..._mappings.map((m) => _ColumnMappingCard(

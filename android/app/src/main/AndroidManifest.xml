@@ -4,7 +4,7 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
-        android:label="محلل المخزون الذكي"
+        android:label="محلل المخزون والتقارير الذكي"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
@@ -22,6 +22,45 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+
+            <!-- استقبال من Share Sheet (مشاركة من تطبيق آخر). عمدًا بلا أي
+                 wildcard مثل image/* أو */* — فقط MIME types المدعومة فعليًا
+                 هنا (٦ أنواع)، حتى لا يظهر التطبيق لصور/فيديو/صوت غير مدعومة
+                 كما نصّت المواصفة (قسم ٤). ملاحظة: بلا SEND_MULTIPLE عمدًا —
+                 واجهة الاستيراد الحالية والجديدة تتعاملان مع ملف واحد فقط؛
+                 إضافتها الآن تُظهر التطبيق لمشاركات متعددة الملفات دون أن
+                 نتعامل فعليًا إلا مع أولها، وهذا سلوك مربك. راجع خطة العمل. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:mimeType="application/vnd.ms-excel" />
+                <data android:mimeType="text/csv" />
+                <data android:mimeType="application/csv" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="image/jpeg" />
+                <data android:mimeType="image/png" />
+                <data android:mimeType="image/webp" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+
+            <!-- استقبال من "Open With" (فتح ملف مباشرة). بلا android:scheme
+                 صراحةً على أي <data> يُقصَر على mimeType فقط — هذا يجعل
+                 أندرويد يفترض ضمنيًا content: وfile: معًا (سلوك موثَّق في
+                 IntentFilter)، فيغطي المصدرين المطلوبين في قسم ٥ بلا تكرار. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:mimeType="application/vnd.ms-excel" />
+                <data android:mimeType="text/csv" />
+                <data android:mimeType="application/csv" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="image/jpeg" />
+                <data android:mimeType="image/png" />
+                <data android:mimeType="image/webp" />
+                <data android:mimeType="application/octet-stream" />
             </intent-filter>
         </activity>
         <meta-data

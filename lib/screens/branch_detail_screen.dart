@@ -29,36 +29,7 @@ class BranchDetailScreen extends StatelessWidget {
       ..sort((a, b) => b.quantity.compareTo(a.quantity));
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(branch.name),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(28),
-          child: Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                if (branch.code.isNotEmpty) Text('كود: ${branch.code}', style: const TextStyle(fontSize: 12)),
-                if (branch.code.isNotEmpty) const SizedBox(width: 10),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: (branch.isActive ? AppColors.expirySafe : Colors.grey).withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    branch.isActive ? 'مفعّل' : 'مُعطَّل',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: branch.isActive ? AppColors.expirySafe : Colors.grey.shade700,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
+      appBar: AppBar(title: Text(branch.name)),
       body: items.isEmpty
           ? const EmptyState(icon: Icons.inventory_2_outlined, title: 'لا توجد أصناف في هذا الفرع بعد')
           : ListView.separated(
@@ -72,7 +43,7 @@ class BranchDetailScreen extends StatelessWidget {
                   child: ListTile(
                     title: Text(product?.name ?? 'صنف محذوف من القاموس'),
                     subtitle: Text('الكمية: ${_numberFormat.format(item.quantity)}'
-                        '${product?.unit != null ? " ${product!.unit}" : ""}'),
+                        '${item.unitCost != null ? " · التكلفة: ${_numberFormat.format(item.unitCost!)}" : ""}'),
                     trailing: _expiryTag(item),
                   ),
                 );

@@ -5,12 +5,11 @@ import 'package:provider/provider.dart';
 import '../providers/import_session_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/settings_provider.dart';
+import '../widgets/import_error_recovery.dart';
+import '../widgets/local_mode_banner.dart';
 import 'column_mapping_screen.dart';
 import 'data_review_screen.dart';
 
-/// مركز الاستيراد الموحّد (القسم 19): Excel/CSV يعملان دومًا بلا إنترنت؛
-/// PDF/صورة/تصوير تحتاج محرك استخراج (محلي أو سحابي اختياري) وإلا تعرض
-/// توجيهًا واضحًا للبدائل — لا تفشل الشاشة بصمت في أي حالة.
 class ImportScreen extends StatelessWidget {
   const ImportScreen({super.key});
 
@@ -29,8 +28,8 @@ class ImportScreen extends StatelessWidget {
     }
 
     final session = context.read<ImportSessionProvider>();
-    final inv = context.read<InventoryProvider>();
-    await session.importExcelOrCsv(file.bytes!, file.name, inv.products, inv.branches, inv.categories);
+    final products = context.read<InventoryProvider>().products;
+    await session.importExcelOrCsv(file.bytes!, file.name, products);
     if (!context.mounted) return;
     _navigateBasedOnStep(context, session);
   }
@@ -50,9 +49,9 @@ class ImportScreen extends StatelessWidget {
     }
 
     final session = context.read<ImportSessionProvider>();
-    final engine = context.read<SettingsProvider>().buildOcrEngine();
-    final inv = context.read<InventoryProvider>();
-    await session.importPdfBytes(file.bytes!, file.name, engine, inv.products, inv.branches, inv.categories);
+    final engine = context.read<SettingsProvider>().buildOcrManager();
+    final products = context.read<InventoryProvider>().products;
+    await session.importPdfBytes(file.bytes!, file.name, engine, products);
     if (!context.mounted) return;
     _navigateBasedOnStep(context, session);
   }
@@ -64,15 +63,13 @@ class ImportScreen extends StatelessWidget {
         : await session.imageService.pickFromGallery();
     if (bytes == null || !context.mounted) return;
 
-    final engine = context.read<SettingsProvider>().buildOcrEngine();
-    final inv = context.read<InventoryProvider>();
+    final engine = context.read<SettingsProvider>().buildOcrManager();
+    final products = context.read<InventoryProvider>().products;
     await session.importImageBytes(
       bytes,
       fromCamera ? 'تصوير_مستند.jpg' : 'صورة_مختارة.jpg',
       engine,
-      inv.products,
-      inv.branches,
-      inv.categories,
+      products,
     );
     if (!context.mounted) return;
 
@@ -85,7 +82,7 @@ class ImportScreen extends StatelessWidget {
   void _navigateBasedOnStep(BuildContext context, ImportSessionProvider session) {
     switch (session.step) {
       case ImportStep.error:
-        _showError(context, session.errorMessage ?? 'حدث خطأ غير متوقع.');
+        break; // البطاقة الدائمة أسفل هذه الشاشة (ImportErrorRecovery) تكفي؛ بلا SnackBar مكرر
       case ImportStep.columnMapping:
         Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ColumnMappingScreen()));
       case ImportStep.review:
@@ -100,11 +97,22 @@ class ImportScreen extends StatelessWidget {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Future<void> _retry(BuildContext context) async {
+    final session = context.read<ImportSessionProvider>();
+    await session.retryLastImport();
+    if (!context.mounted) return;
+    _navigateBasedOnStep(context, session);
+  }
+
+  void _manualEntry(BuildContext context) {
+    final session = context.read<ImportSessionProvider>();
+    final name = session.fileName;
+    session.startManualEntry(name: name.isEmpty ? 'إدخال يدوي' : name);
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DataReviewScreen()));
+  }
+
   @override
   Widget build(BuildContext context) {
-    final settings = context.watch<SettingsProvider>();
-    final ocrAvailable = settings.useCloudOcr && settings.hasApiKey;
-
     return Scaffold(
       appBar: AppBar(title: const Text('استيراد البيانات')),
       body: Consumer<ImportSessionProvider>(
@@ -125,52 +133,45 @@ class ImportScreen extends StatelessWidget {
           return ListView(
             padding: const EdgeInsets.all(20),
             children: [
-              if (!ocrAvailable)
-                Card(
-                  color: Theme.of(context).colorScheme.tertiaryContainer,
-                  child: const Padding(
-                    padding: EdgeInsets.all(14),
-                    child: Text(
-                      'استيراد Excel/CSV يعمل دومًا بلا إنترنت. استخراج الصور/PDF اختياري '
-                      'ويحتاج تفعيله من الإعدادات؛ وإن لم يكن مفعّلاً يمكنك دومًا إدخال البيانات '
-                      'يدويًا أو عبر Excel/CSV بدلًا منه.',
-                      style: TextStyle(fontSize: 12.5),
-                    ),
-                  ),
-                ),
+              // نفس ودجت "وضع محلي" المستخدَمة أعلى التطبيق (بلا ازدواج نص) —
+              // وهنا تلتقط أيضًا حالة "مفتاح موجود لكن أثبت الاختبار/الاستخدام
+              // الفعلي أنه لا يعمل"، وليس فقط غياب المفتاح كليًا.
+              const ClipRRect(
+                borderRadius: BorderRadius.all(Radius.circular(14)),
+                child: LocalModeBanner(),
+              ),
               const SizedBox(height: 12),
               _SourceButton(
                 icon: Icons.table_chart_outlined,
-                label: 'Excel / CSV',
-                subtitle: 'xlsx / xls / csv — يعمل دون إنترنت دائمًا',
+                label: 'Excel',
+                subtitle: 'xlsx / xls / csv — يعمل دون إنترنت',
                 onTap: () => _pickExcel(context),
               ),
               _SourceButton(
                 icon: Icons.picture_as_pdf_outlined,
                 label: 'PDF',
-                subtitle: 'مطبوع أو ممسوح ضوئيًا (استخراج اختياري)',
+                subtitle: 'مطبوع أو ممسوح ضوئيًا',
                 onTap: () => _pickPdf(context),
               ),
               _SourceButton(
                 icon: Icons.image_outlined,
                 label: 'صورة',
-                subtitle: 'اختيار من المعرض (استخراج اختياري)',
+                subtitle: 'اختيار من المعرض',
                 onTap: () => _pickImage(context, fromCamera: false),
               ),
               _SourceButton(
                 icon: Icons.camera_alt_outlined,
                 label: 'تصوير مستند',
-                subtitle: 'تصوير مباشر بالكاميرا (استخراج اختياري)',
+                subtitle: 'تصوير مباشر بالكاميرا',
                 onTap: () => _pickImage(context, fromCamera: true),
               ),
               if (session.step == ImportStep.error) ...[
                 const SizedBox(height: 8),
-                Card(
-                  color: Theme.of(context).colorScheme.errorContainer,
-                  child: Padding(
-                    padding: const EdgeInsets.all(14),
-                    child: Text(session.errorMessage ?? ''),
-                  ),
+                ImportErrorRecovery(
+                  message: session.errorMessage ?? 'حدث خطأ غير متوقع.',
+                  onRetry: session.canRetry ? () => _retry(context) : null,
+                  onManualEntry: () => _manualEntry(context),
+                  onCancel: () => session.reset(),
                 ),
               ],
             ],
@@ -220,9 +221,7 @@ class _SourceButton extends StatelessWidget {
                   children: [
                     Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                     const SizedBox(height: 2),
-                    Text(subtitle,
-                        style: TextStyle(
-                            color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12.5)),
+                    Text(subtitle, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12.5)),
                   ],
                 ),
               ),
