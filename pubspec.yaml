@@ -50,6 +50,11 @@ dependencies:
 
   # استخراج البيانات من الصور/PDF عبر نموذج ذكاء اصطناعي متعدد الوسائط (اختياري، أونلاين فقط وقت الاستيراد)
   http: ^1.2.2
+
+  # استقبال الملفات من Share Sheet / Open With على أندرويد. أندرويد/iOS فقط
+  # (لا تدعم الويب) — كل استخدام محاط بـconditional import (راجع
+  # incoming_file_service.dart)، فلا خطر على flutter build web.
+  receive_sharing_intent: ">=1.9.0 <2.0.0"
   flutter_secure_storage: ">=9.0.0 <11.0.0"
 
   # أدوات عامة

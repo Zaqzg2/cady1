@@ -665,6 +665,8 @@ class InventoryProvider extends ChangeNotifier {
     required ImportSourceType sourceType,
     required String fileName,
     String? defaultBranchId,
+    String? ocrProvider,
+    String? ocrModel,
   }) async {
     await ensureDefaultBranch();
     final fallbackBranchId = defaultBranchId ?? branches.first.id;
@@ -783,6 +785,8 @@ class InventoryProvider extends ChangeNotifier {
       fileName: fileName,
       rawRowCount: rows.length,
       acceptedRowCount: accepted,
+      ocrProvider: ocrProvider,
+      ocrModel: ocrModel,
     ));
 
     await load();

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../widgets/local_mode_banner.dart';
 import 'dashboard_screen.dart';
 import 'goals_screen.dart';
 import 'inventory_analysis_screen.dart';
@@ -39,7 +40,14 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     final isWide = MediaQuery.of(context).size.width >= 720;
 
-    final body = IndexedStack(index: _index, children: _screens);
+    final body = Column(
+      children: [
+        // true هنا تحديدًا (أعلى الشاشة فورًا بلا AppBar فوقها) — بخلاف
+        // استخدامها داخل شاشات الاستيراد أسفل AppBar.
+        const LocalModeBanner(applyTopSafeArea: true),
+        Expanded(child: IndexedStack(index: _index, children: _screens)),
+      ],
+    );
 
     if (isWide) {
       return Scaffold(

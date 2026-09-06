@@ -1,26 +1,27 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-import '../services/ocr_service.dart';
+import '../services/mistral_api_client.dart';
+import '../services/ocr_manager.dart';
+import '../services/ocr_space_api_client.dart';
 import '../services/repository.dart';
 
-/// كل إعدادات التطبيق (القسم 34). المفتاح السرّي فقط (API Key) يُخزَّن عبر
-/// Keychain/Keystore (وليس Hive)؛ كل الإعدادات الأخرى — غير الحسّاسة — تُخزَّن
-/// في صندوق الإعدادات العادي عبر Repository لتبقى سريعة ومتّسقة مع باقي البيانات.
+/// كل إعدادات التطبيق. المفاتيح السرّية (Mistral/OCR.space) عبر
+/// Keychain/Keystore، مستقلَّان تمامًا بلا خلط بينهما؛ كل الإعدادات الأخرى —
+/// غير الحسّاسة — عبر Repository.
 ///
 /// ⚠️ الاستخراج السحابي الاختياري مناسب للتجربة والاستخدام الشخصي فقط. لنشر
-/// عام، لا تضع مفتاح API مباشرة في تطبيق موزَّع — استخدم خادمًا وسيطًا
-/// (Backend Proxy) بدلًا من ذلك، لأن أي APK يمكن فك حزمه واستخراج المفاتيح.
+/// عام (خصوصًا Flutter Web) لا يمكن إخفاء مفتاح API حقيقةً — استخدم خادمًا
+/// وسيطًا (Backend Proxy) بدلًا من ذلك؛ mistral_api_client.dart/ocr_space_api_client.dart
+/// مصمَّمان كطبقة منفصلة تمامًا بحيث يمكن استبدالهما بنداء proxy لاحقًا بلا
+/// تغيير OcrEngine أو أي شاشة.
 class SettingsProvider extends ChangeNotifier {
-  static const _keyApiKey = 'ai_vision_api_key';
-  static const _keyApiBaseUrl = 'ai_vision_base_url';
-  static const _keyModel = 'ai_vision_model';
-
-  static const _defaultBaseUrl = 'https://api.anthropic.com/v1/messages';
-  static const _defaultModel = 'claude-sonnet-5';
+  static const _keyMistralApiKey = 'mistral_api_key';
+  static const _keyOcrSpaceApiKey = 'ocr_space_api_key';
+  static const _keyEngineSelection = 'ocr_engine_selection';
+  static const _keyAutoFallback = 'ocr_auto_fallback_enabled';
 
   // مفاتيح صندوق الإعدادات العادي (Hive) — غير سرّية
-  static const _kUseCloudOcr = 'use_cloud_ocr';
   static const _kCurrency = 'currency_code';
   static const _kMonthStartDay = 'month_start_day';
   static const _kDefaultReorderPoint = 'default_reorder_point';
@@ -33,11 +34,18 @@ class SettingsProvider extends ChangeNotifier {
 
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
   final Repository _repo = Repository();
+  final MistralApiClient _mistralClient = const MistralApiClient();
+  final OcrSpaceApiClient _ocrSpaceClient = const OcrSpaceApiClient();
 
-  String? apiKey;
-  String apiBaseUrl = _defaultBaseUrl;
-  String model = _defaultModel;
-  bool useCloudOcr = false;
+  String? mistralApiKey;
+  String? ocrSpaceApiKey;
+  OcrEngineSelection engineSelection = OcrEngineSelection.mistral;
+  bool autoFallbackEnabled = true;
+
+  MistralHealthResult? mistralHealthResult;
+  OcrSpaceHealthResult? ocrSpaceHealthResult;
+  bool isTestingMistral = false;
+  bool isTestingOcrSpace = false;
 
   String currencyCode = 'SAR';
   int monthStartDay = 1;
@@ -51,18 +59,25 @@ class SettingsProvider extends ChangeNotifier {
 
   bool isLoaded = false;
 
-  bool get hasApiKey => apiKey != null && apiKey!.trim().isNotEmpty;
+  bool get hasMistralKey => mistralApiKey != null && mistralApiKey!.trim().isNotEmpty;
+  bool get hasOcrSpaceKey => ocrSpaceApiKey != null && ocrSpaceApiKey!.trim().isNotEmpty;
+  bool get hasAnyOcrKey => hasMistralKey || hasOcrSpaceKey;
 
   Future<void> load() async {
     try {
-      apiKey = await _secureStorage.read(key: _keyApiKey);
-      apiBaseUrl = await _secureStorage.read(key: _keyApiBaseUrl) ?? _defaultBaseUrl;
-      model = await _secureStorage.read(key: _keyModel) ?? _defaultModel;
+      mistralApiKey = await _secureStorage.read(key: _keyMistralApiKey);
+      ocrSpaceApiKey = await _secureStorage.read(key: _keyOcrSpaceApiKey);
+      final storedSelection = await _secureStorage.read(key: _keyEngineSelection);
+      engineSelection = OcrEngineSelection.values.firstWhere(
+        (e) => e.name == storedSelection,
+        orElse: () => OcrEngineSelection.mistral,
+      );
+      final storedFallback = await _secureStorage.read(key: _keyAutoFallback);
+      autoFallbackEnabled = storedFallback == null ? true : storedFallback == 'true';
     } catch (_) {
       // بعض المنصات قد لا تدعم التخزين الآمن بالكامل بعد — لا نُسقط التطبيق بسبب ذلك
     }
 
-    useCloudOcr = _repo.getSetting<bool>(_kUseCloudOcr, false) ?? false;
     currencyCode = _repo.getSetting<String>(_kCurrency, 'SAR') ?? 'SAR';
     monthStartDay = _repo.getSetting<int>(_kMonthStartDay, 1) ?? 1;
     defaultReorderPoint = (_repo.getSetting<num>(_kDefaultReorderPoint, 5) ?? 5).toDouble();
@@ -78,51 +93,87 @@ class SettingsProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ---------------- OCR الاختياري ----------------
+  // ---------------- OCR الاختياري (Mistral + OCR.space) ----------------
 
-  Future<void> setApiKey(String value) async {
-    apiKey = value.trim();
+  Future<void> setMistralApiKey(String value) async {
+    mistralApiKey = value.trim();
+    mistralHealthResult = null;
     notifyListeners();
     try {
-      await _secureStorage.write(key: _keyApiKey, value: apiKey);
-    } catch (_) {
-      // يبقى المفتاح صالحًا لهذه الجلسة حتى لو تعذّر حفظه بشكل دائم
-    }
-  }
-
-  Future<void> clearApiKey() async {
-    apiKey = null;
-    useCloudOcr = false;
-    notifyListeners();
-    try {
-      await _secureStorage.delete(key: _keyApiKey);
-    } catch (_) {}
-    await _repo.setSetting(_kUseCloudOcr, false);
-  }
-
-  Future<void> setModel(String value) async {
-    model = value.trim().isEmpty ? _defaultModel : value.trim();
-    notifyListeners();
-    try {
-      await _secureStorage.write(key: _keyModel, value: model);
+      await _secureStorage.write(key: _keyMistralApiKey, value: mistralApiKey);
     } catch (_) {}
   }
 
-  Future<void> setUseCloudOcr(bool value) async {
-    useCloudOcr = value;
-    await _repo.setSetting(_kUseCloudOcr, value);
+  Future<void> clearMistralApiKey() async {
+    mistralApiKey = null;
+    mistralHealthResult = null;
+    notifyListeners();
+    try {
+      await _secureStorage.delete(key: _keyMistralApiKey);
+    } catch (_) {}
+  }
+
+  Future<void> setOcrSpaceApiKey(String value) async {
+    ocrSpaceApiKey = value.trim();
+    ocrSpaceHealthResult = null;
+    notifyListeners();
+    try {
+      await _secureStorage.write(key: _keyOcrSpaceApiKey, value: ocrSpaceApiKey);
+    } catch (_) {}
+  }
+
+  Future<void> clearOcrSpaceApiKey() async {
+    ocrSpaceApiKey = null;
+    ocrSpaceHealthResult = null;
+    notifyListeners();
+    try {
+      await _secureStorage.delete(key: _keyOcrSpaceApiKey);
+    } catch (_) {}
+  }
+
+  Future<void> setEngineSelection(OcrEngineSelection value) async {
+    engineSelection = value;
+    notifyListeners();
+    try {
+      await _secureStorage.write(key: _keyEngineSelection, value: value.name);
+    } catch (_) {}
+  }
+
+  Future<void> setAutoFallbackEnabled(bool value) async {
+    autoFallbackEnabled = value;
+    notifyListeners();
+    try {
+      await _secureStorage.write(key: _keyAutoFallback, value: '$value');
+    } catch (_) {}
+  }
+
+  Future<void> testMistralConnection() async {
+    if (!hasMistralKey) return;
+    isTestingMistral = true;
+    notifyListeners();
+    mistralHealthResult = await _mistralClient.testConnection(mistralApiKey!);
+    isTestingMistral = false;
     notifyListeners();
   }
 
-  /// اختيار محرك OCR الفعلي بحسب تفضيل المستخدم — افتراضيًا محلي (القسم 23:
-  /// اختياري بالكامل، ليس Dependency). لا يتحوّل لسحابي إلا بتفعيل صريح
-  /// [useCloudOcr] مع وجود مفتاح فعليًا.
-  OcrEngine buildOcrEngine() {
-    if (useCloudOcr && hasApiKey) {
-      return OptionalCloudOcrEngine(apiKey: apiKey!, apiBaseUrl: apiBaseUrl, model: model);
-    }
-    return LocalOcrEngine();
+  Future<void> testOcrSpaceConnection() async {
+    if (!hasOcrSpaceKey) return;
+    isTestingOcrSpace = true;
+    notifyListeners();
+    ocrSpaceHealthResult = await _ocrSpaceClient.testConnection(ocrSpaceApiKey!);
+    isTestingOcrSpace = false;
+    notifyListeners();
   }
+
+  /// نقطة الدخول الوحيدة لبناء منسّق OCR — التطبيق يستمر Offline بالكامل
+  /// (Excel/Dashboard/بحث/تقارير/إدخال يدوي) بلا أي مفتاح على الإطلاق؛ هذا
+  /// يُستخدَم فقط عند استيراد صورة أو PDF.
+  OcrManager buildOcrManager() => OcrManager(
+        mistralApiKey: mistralApiKey,
+        ocrSpaceApiKey: ocrSpaceApiKey,
+        selection: engineSelection,
+        autoFallbackEnabled: autoFallbackEnabled,
+      );
 
   // ---------------- إعدادات عامة (القسم 34) ----------------
 

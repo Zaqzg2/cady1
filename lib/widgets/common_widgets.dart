@@ -58,23 +58,43 @@ class KpiCard extends StatelessWidget {
 class ConfidenceBadge extends StatelessWidget {
   final double confidence; // 0.0 - 1.0
   final bool compact;
-  const ConfidenceBadge({super.key, required this.confidence, this.compact = false});
+
+  /// true عندما لا يوفّر مصدر الاستخراج (OCR.space) ثقة حقيقية لكل حقل —
+  /// نعرض "الثقة غير متاحة" بدل نسبة مختلَقة.
+  final bool unavailable;
+
+  const ConfidenceBadge({super.key, required this.confidence, this.compact = false, this.unavailable = false});
 
   @override
   Widget build(BuildContext context) {
+    if (unavailable) {
+      return Container(
+        padding: EdgeInsets.symmetric(horizontal: compact ? 6 : 10, vertical: compact ? 2 : 5),
+        decoration: BoxDecoration(color: Colors.grey.withValues(alpha: 0.13), borderRadius: BorderRadius.circular(20)),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(width: 7, height: 7, decoration: const BoxDecoration(color: Colors.grey, shape: BoxShape.circle)),
+            const SizedBox(width: 5),
+            Text('الثقة غير متاحة', style: TextStyle(color: Colors.grey.shade700, fontSize: compact ? 10.5 : 12, fontWeight: FontWeight.w600)),
+          ],
+        ),
+      );
+    }
+
     final level = confidence.level;
     final Color color;
     final String label;
     switch (level) {
       case ConfidenceLevel.high:
         color = AppColors.confidenceHigh;
-        label = 'مؤكدة';
+        label = 'ثقة عالية';
       case ConfidenceLevel.medium:
         color = AppColors.confidenceMedium;
-        label = 'راجع';
+        label = 'مراجعة موصى بها';
       case ConfidenceLevel.low:
         color = AppColors.confidenceLow;
-        label = 'غير مؤكدة';
+        label = 'تحتاج مراجعة';
     }
     final percent = '${(confidence * 100).round()}%';
 

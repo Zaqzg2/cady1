@@ -9,6 +9,9 @@ import 'package:share_plus/share_plus.dart';
 
 import '../providers/inventory_provider.dart';
 import '../providers/settings_provider.dart';
+import '../services/mistral_api_client.dart';
+import '../services/ocr_manager.dart';
+import '../services/ocr_space_api_client.dart';
 import '../widgets/common_widgets.dart';
 
 final _dateTimeFormat = DateFormat('yyyy/MM/dd HH:mm');
@@ -24,13 +27,16 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  final _apiKeyController = TextEditingController();
-  bool _obscure = true;
+  final _mistralKeyController = TextEditingController();
+  final _ocrSpaceKeyController = TextEditingController();
+  bool _obscureMistral = true;
+  bool _obscureOcrSpace = true;
   bool _busy = false;
 
   @override
   void dispose() {
-    _apiKeyController.dispose();
+    _mistralKeyController.dispose();
+    _ocrSpaceKeyController.dispose();
     super.dispose();
   }
 
@@ -134,7 +140,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsProvider>();
     final provider = context.watch<InventoryProvider>();
-    _apiKeyController.text = settings.apiKey ?? '';
+    _mistralKeyController.text = settings.mistralApiKey ?? '';
+    _ocrSpaceKeyController.text = settings.ocrSpaceApiKey ?? '';
 
     return Scaffold(
       appBar: AppBar(title: const Text('الإعدادات')),
@@ -264,59 +271,156 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   children: [
                     const Text(
                       'يُستخدم فقط عند استيراد صورة أو PDF (يحتاج إنترنت في تلك اللحظة). '
-                      'استيراد Excel/CSV لا يحتاج هذا إطلاقًا ويعمل دائمًا بلا إنترنت. بلا تفعيل، '
+                      'استيراد Excel/CSV لا يحتاج هذا إطلاقًا ويعمل دائمًا بلا إنترنت. بلا أي مفتاح، '
                       'يبقى استخراج الصور غير متاح ويمكن إدخال بياناتها يدويًا بدلًا من ذلك.',
                       style: TextStyle(fontSize: 12.5, color: Colors.grey),
                     ),
-                    const SizedBox(height: 14),
+                    const SizedBox(height: 12),
+                    const Text('محرك OCR', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                    const SizedBox(height: 6),
+                    SegmentedButton<OcrEngineSelection>(
+                      segments: const [
+                        ButtonSegment(value: OcrEngineSelection.mistral, label: Text('Mistral AI')),
+                        ButtonSegment(value: OcrEngineSelection.ocrSpace, label: Text('OCR.space')),
+                        ButtonSegment(value: OcrEngineSelection.automatic, label: Text('تلقائي')),
+                      ],
+                      selected: {settings.engineSelection},
+                      onSelectionChanged: (s) => context.read<SettingsProvider>().setEngineSelection(s.first),
+                    ),
+                    const SizedBox(height: 6),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      value: settings.autoFallbackEnabled,
+                      onChanged: (v) => context.read<SettingsProvider>().setAutoFallbackEnabled(v ?? true),
+                      title: const Text('استخدام محرك بديل عند الفشل', style: TextStyle(fontSize: 13)),
+                      subtitle: const Text(
+                        'في الوضع التلقائي فقط: Mistral أولًا، ثم OCR.space إن فشل مؤقتًا.',
+                        style: TextStyle(fontSize: 11.5, color: Colors.grey),
+                      ),
+                    ),
+                    const Divider(height: 28),
+
+                    Row(children: [
+                      const Text('Mistral AI', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                      const SizedBox(width: 6),
+                      _enginePill('المحرك الأساسي'),
+                    ]),
+                    const SizedBox(height: 8),
+                    _EngineStatusPill(
+                      isTesting: settings.isTestingMistral,
+                      hasKey: settings.hasMistralKey,
+                      emoji: settings.mistralHealthResult?.status.emoji,
+                      color: _mistralColor(settings.mistralHealthResult?.status.indicator),
+                      label: settings.mistralHealthResult?.status.labelAr,
+                      message: settings.mistralHealthResult?.messageAr ??
+                          (settings.hasMistralKey ? 'المفتاح محفوظ لكن لم يُختبر بعد. اضغط "اختبار Mistral".' : 'لم يتم إعداد Mistral.'),
+                    ),
+                    const SizedBox(height: 10),
                     TextField(
-                      controller: _apiKeyController,
-                      obscureText: _obscure,
+                      controller: _mistralKeyController,
+                      obscureText: _obscureMistral,
                       decoration: InputDecoration(
-                        labelText: 'مفتاح API',
+                        labelText: 'Mistral API Key',
                         suffixIcon: IconButton(
-                          icon: Icon(_obscure ? Icons.visibility_off_outlined : Icons.visibility_outlined),
-                          onPressed: () => setState(() => _obscure = !_obscure),
+                          icon: Icon(_obscureMistral ? Icons.visibility_off_outlined : Icons.visibility_outlined),
+                          onPressed: () => setState(() => _obscureMistral = !_obscureMistral),
                         ),
                       ),
                     ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: FilledButton(
-                            onPressed: () =>
-                                context.read<SettingsProvider>().setApiKey(_apiKeyController.text),
-                            child: const Text('حفظ المفتاح'),
-                          ),
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: settings.isTestingMistral ? null : () => context.read<SettingsProvider>().testMistralConnection(),
+                          child: const Text('اختبار Mistral'),
                         ),
-                        if (settings.hasApiKey) ...[
-                          const SizedBox(width: 8),
-                          OutlinedButton(
-                            onPressed: () {
-                              _apiKeyController.clear();
-                              context.read<SettingsProvider>().clearApiKey();
-                            },
-                            child: const Text('حذف'),
-                          ),
-                        ],
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: settings.isTestingMistral
+                              ? null
+                              : () async {
+                                  await context.read<SettingsProvider>().setMistralApiKey(_mistralKeyController.text);
+                                  if (context.mounted) await context.read<SettingsProvider>().testMistralConnection();
+                                },
+                          child: const Text('حفظ'),
+                        ),
+                      ),
+                      if (settings.hasMistralKey) ...[
+                        const SizedBox(width: 8),
+                        OutlinedButton(
+                          style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                          onPressed: () {
+                            _mistralKeyController.clear();
+                            context.read<SettingsProvider>().clearMistralApiKey();
+                          },
+                          child: const Text('حذف'),
+                        ),
                       ],
+                    ]),
+                    const Divider(height: 28),
+
+                    Row(children: [
+                      const Text('OCR.space', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                      const SizedBox(width: 6),
+                      _enginePill('المحرك البديل'),
+                    ]),
+                    const SizedBox(height: 8),
+                    _EngineStatusPill(
+                      isTesting: settings.isTestingOcrSpace,
+                      hasKey: settings.hasOcrSpaceKey,
+                      emoji: settings.ocrSpaceHealthResult?.status.emoji,
+                      color: _ocrSpaceColor(settings.ocrSpaceHealthResult?.status.indicator),
+                      label: settings.ocrSpaceHealthResult?.status.labelAr,
+                      message: settings.ocrSpaceHealthResult?.messageAr ??
+                          (settings.hasOcrSpaceKey ? 'المفتاح محفوظ لكن لم يُختبر بعد. اضغط "اختبار OCR.space".' : 'لم يتم إعداد OCR.space.'),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      settings.hasApiKey ? '✓ المفتاح مضبوط ومحفوظ بأمان على الجهاز' : 'لم يُضبط أي مفتاح بعد',
-                      style: TextStyle(fontSize: 12, color: settings.hasApiKey ? Colors.green : Colors.grey),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _ocrSpaceKeyController,
+                      obscureText: _obscureOcrSpace,
+                      decoration: InputDecoration(
+                        labelText: 'OCR.space API Key',
+                        suffixIcon: IconButton(
+                          icon: Icon(_obscureOcrSpace ? Icons.visibility_off_outlined : Icons.visibility_outlined),
+                          onPressed: () => setState(() => _obscureOcrSpace = !_obscureOcrSpace),
+                        ),
+                      ),
                     ),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('استخدام الاستخراج السحابي عند توفر مفتاح'),
-                      subtitle: const Text('إن كان معطَّلاً، يبقى التطبيق يعرض توجيهًا للإدخال اليدوي بدل الفشل',
-                          style: TextStyle(fontSize: 11.5)),
-                      value: settings.useCloudOcr,
-                      onChanged: settings.hasApiKey
-                          ? (v) => context.read<SettingsProvider>().setUseCloudOcr(v)
-                          : null,
-                    ),
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: settings.isTestingOcrSpace ? null : () => context.read<SettingsProvider>().testOcrSpaceConnection(),
+                          child: const Text('اختبار OCR.space'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: settings.isTestingOcrSpace
+                              ? null
+                              : () async {
+                                  await context.read<SettingsProvider>().setOcrSpaceApiKey(_ocrSpaceKeyController.text);
+                                  if (context.mounted) await context.read<SettingsProvider>().testOcrSpaceConnection();
+                                },
+                          child: const Text('حفظ'),
+                        ),
+                      ),
+                      if (settings.hasOcrSpaceKey) ...[
+                        const SizedBox(width: 8),
+                        OutlinedButton(
+                          style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                          onPressed: () {
+                            _ocrSpaceKeyController.clear();
+                            context.read<SettingsProvider>().clearOcrSpaceApiKey();
+                          },
+                          child: const Text('حذف'),
+                        ),
+                      ],
+                    ]),
                   ],
                 ),
               ),

@@ -24,6 +24,8 @@ class DataReviewScreen extends StatelessWidget {
       rows: session.rows,
       sourceType: session.sourceType!,
       fileName: session.fileName,
+      ocrProvider: session.ocrProvider,
+      ocrModel: session.ocrModel,
     );
     session.reset();
 
@@ -36,11 +38,13 @@ class DataReviewScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final session = context.watch<ImportSessionProvider>();
+    final isManual = session.sourceType == ImportSourceType.manual;
 
     return Scaffold(
       appBar: AppBar(title: Text('مراجعة البيانات (${session.rows.length})')),
       body: Column(
         children: [
+          if (session.ocrProvider != null) _OcrSourceIndicator(provider: session.ocrProvider!),
           if (session.isPdfTruncated)
             Container(
               width: double.infinity,
@@ -83,13 +87,29 @@ class DataReviewScreen extends StatelessWidget {
               ],
             ),
           ),
+          if (isManual)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+              child: SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => context.read<ImportSessionProvider>().addBlankRow(),
+                  icon: const Icon(Icons.add_rounded),
+                  label: const Text('إضافة سطر'),
+                ),
+              ),
+            ),
           Expanded(
             child: session.rows.isEmpty
-                ? const EmptyState(icon: Icons.inbox_outlined, title: 'لا توجد بيانات مستخرجة')
+                ? EmptyState(
+                    icon: Icons.inbox_outlined,
+                    title: isManual ? 'لا توجد أسطر بعد — اضغط "إضافة سطر" لتبدأ' : 'لا توجد بيانات مستخرجة',
+                  )
                 : ListView.builder(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
                     itemCount: session.rows.length,
-                    itemBuilder: (context, i) => _ReviewRowCard(row: session.rows[i], index: i),
+                    itemBuilder: (context, i) =>
+                        _ReviewRowCard(row: session.rows[i], index: i, isManualEntry: isManual),
                   ),
           ),
         ],
@@ -107,10 +127,47 @@ class DataReviewScreen extends StatelessWidget {
   }
 }
 
+/// مؤشر مصدر البيانات — أي محرك OCR أنتج rows الجلسة الحالية. لا يظهر
+/// لجلسات Excel/يدوي (session.ocrProvider == null).
+class _OcrSourceIndicator extends StatelessWidget {
+  final String provider; // 'mistral' | 'ocr_space'
+  const _OcrSourceIndicator({required this.provider});
+
+  @override
+  Widget build(BuildContext context) {
+    final label = provider == 'mistral' ? 'Mistral AI' : provider == 'ocr_space' ? 'OCR.space' : provider;
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.auto_awesome_outlined, size: 16, color: scheme.onSurfaceVariant),
+            const SizedBox(width: 8),
+            Text('محرك OCR: ', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+            Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+            const Spacer(),
+            Container(width: 6, height: 6, decoration: const BoxDecoration(color: Colors.green, shape: BoxShape.circle)),
+            const SizedBox(width: 5),
+            const Text('مكتمل', style: TextStyle(fontSize: 11.5, color: Colors.green, fontWeight: FontWeight.w600)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ReviewRowCard extends StatelessWidget {
   final ExtractedRow row;
   final int index;
-  const _ReviewRowCard({required this.row, required this.index});
+  final bool isManualEntry;
+  const _ReviewRowCard({required this.row, required this.index, this.isManualEntry = false});
 
   void _editCell(BuildContext context, FieldType field) async {
     final cell = row.cellOf(field);
@@ -148,6 +205,29 @@ class _ReviewRowCard extends StatelessWidget {
           context.read<ImportSessionProvider>().forceNewProductForRow(row.id);
           Navigator.pop(ctx);
         },
+      ),
+    );
+  }
+
+  Widget _field(BuildContext context, String label, ExtractedCell? cell, FieldType field) {
+    if (cell != null) {
+      return _EditableRowField(label: label, cell: cell, onTap: () => _editCell(context, field));
+    }
+    if (!isManualEntry) return const SizedBox.shrink();
+    // في الإدخال اليدوي فقط: نعرض حقولًا لم تُملأ بعد كخيار "إضافة" واضح.
+    return InkWell(
+      onTap: () => _editCell(context, field),
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          children: [
+            SizedBox(width: 78, child: Text(label, style: const TextStyle(color: Colors.grey, fontSize: 12.5))),
+            const Icon(Icons.add_circle_outline_rounded, size: 16, color: Colors.grey),
+            const SizedBox(width: 6),
+            const Text('إضافة', style: TextStyle(color: Colors.grey, fontSize: 12.5)),
+          ],
+        ),
       ),
     );
   }
@@ -191,16 +271,19 @@ class _ReviewRowCard extends StatelessWidget {
                 children: [
                   Text('#${index + 1}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
                   const Spacer(),
-                  ConfidenceBadge(confidence: row.overallConfidence),
+                  ConfidenceBadge(confidence: row.overallConfidence, unavailable: row.confidenceUnavailable),
+                  if (isManualEntry) ...[
+                    const SizedBox(width: 4),
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.delete_outline_rounded, size: 19, color: Colors.grey),
+                      onPressed: () => context.read<ImportSessionProvider>().removeRow(row.id),
+                    ),
+                  ],
                 ],
               ),
               const SizedBox(height: 6),
-              if (nameCell != null)
-                _EditableRowField(
-                  label: 'الصنف',
-                  cell: nameCell,
-                  onTap: () => _editCell(context, FieldType.productName),
-                ),
+              _field(context, 'الصنف', nameCell, FieldType.productName),
               if (showSuggestion) _MatchSuggestionBanner(row: row, onChangeProduct: () => _showProductPicker(context)),
               if (row.matchedProductId != null)
                 Padding(
@@ -222,43 +305,15 @@ class _ReviewRowCard extends StatelessWidget {
                   label: 'الكمية',
                   cell: quantityCell,
                   onTap: () => _editCell(context, FieldType.quantity),
-                ),
-              if (itemNumberCell != null)
-                _EditableRowField(
-                  label: 'رقم الصنف',
-                  cell: itemNumberCell,
-                  onTap: () => _editCell(context, FieldType.itemNumber),
-                ),
-              if (barcodeCell != null)
-                _EditableRowField(
-                  label: 'Barcode',
-                  cell: barcodeCell,
-                  onTap: () => _editCell(context, FieldType.barcode),
-                ),
-              if (unitCell != null)
-                _EditableRowField(
-                  label: 'الوحدة',
-                  cell: unitCell,
-                  onTap: () => _editCell(context, FieldType.unit),
-                ),
-              if (branchCell != null)
-                _EditableRowField(
-                  label: 'الفرع',
-                  cell: branchCell,
-                  onTap: () => _editCell(context, FieldType.branch),
-                ),
-              if (productionCell != null)
-                _EditableRowField(
-                  label: 'تاريخ الإنتاج',
-                  cell: productionCell,
-                  onTap: () => _editCell(context, FieldType.productionDate),
-                ),
-              if (expiryCell != null)
-                _EditableRowField(
-                  label: 'تاريخ الانتهاء',
-                  cell: expiryCell,
-                  onTap: () => _editCell(context, FieldType.expiryDate),
-                ),
+                )
+              else if (isManualEntry)
+                _field(context, 'الكمية', null, FieldType.quantity),
+              _field(context, 'رقم الصنف', itemNumberCell, FieldType.itemNumber),
+              _field(context, 'Barcode', barcodeCell, FieldType.barcode),
+              _field(context, 'الوحدة', unitCell, FieldType.unit),
+              _field(context, 'الفرع', branchCell, FieldType.branch),
+              _field(context, 'تاريخ الإنتاج', productionCell, FieldType.productionDate),
+              _field(context, 'تاريخ الانتهاء', expiryCell, FieldType.expiryDate),
               if (row.validationIssues.isNotEmpty)
                 Container(
                   margin: const EdgeInsets.only(top: 8),
@@ -327,7 +382,7 @@ class _EditableRowField extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis),
             ),
-            ConfidenceBadge(confidence: cell.confidence, compact: true),
+            ConfidenceBadge(confidence: cell.confidence, compact: true, unavailable: cell.confidenceSource == 'unavailable'),
             const SizedBox(width: 4),
             const Icon(Icons.edit_outlined, size: 14, color: Colors.grey),
           ],

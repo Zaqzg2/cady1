@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
@@ -6,6 +8,8 @@ import 'providers/import_session_provider.dart';
 import 'providers/inventory_provider.dart';
 import 'providers/settings_provider.dart';
 import 'screens/home_shell.dart';
+import 'screens/incoming_import_screen.dart';
+import 'services/incoming_file_service.dart';
 import 'services/storage_service.dart';
 import 'theme/app_theme.dart';
 
@@ -20,6 +24,39 @@ class InventoryAnalyzerApp extends StatefulWidget {
 class _InventoryAnalyzerAppState extends State<InventoryAnalyzerApp> {
   late String? _storageError = widget.storageInitError;
   bool _retrying = false;
+
+  // Navigator منفصل عبر مفتاح عام، حتى نستطيع التنقّل لشاشة الاستيراد فور
+  // استقبال ملف مُشارَك من نظام أندرويد — بمعزل عن أي BuildContext محلي.
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+  StreamSubscription<IncomingFile>? _incomingSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _wireIncomingShares();
+  }
+
+  @override
+  void dispose() {
+    _incomingSub?.cancel();
+    IncomingFileService.instance.dispose();
+    super.dispose();
+  }
+
+  Future<void> _wireIncomingShares() async {
+    final initial = await IncomingFileService.instance.consumeInitialFile();
+    if (initial != null) _openIncomingImport(initial);
+    _incomingSub = IncomingFileService.instance.onFileReceived.listen(_openIncomingImport);
+  }
+
+  void _openIncomingImport(IncomingFile file) {
+    if (_storageError != null) return; // لا نفتح استيرادًا فوق شاشة خطأ تخزين
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _navigatorKey.currentState?.push(
+        MaterialPageRoute(builder: (_) => IncomingImportScreen(file: file)),
+      );
+    });
+  }
 
   Future<void> _retryInit() async {
     setState(() => _retrying = true);
@@ -44,6 +81,9 @@ class _InventoryAnalyzerAppState extends State<InventoryAnalyzerApp> {
     // النتيجة: ProviderNotFoundException أثناء build()، وفي بناء release
     // (على عكس debug) تُستبدَل شاشة الخطأ الحمراء التفصيلية بمربع رمادي
     // فارغ بلا أي رسالة — بالضبط ما ظهر عند فتح شاشة الاستيراد.
+    // (الأمر نفسه ينطبق على IncomingImportScreen المفتوحة عبر _navigatorKey
+    // أعلاه — بما أنها تُدفَع على نفس Navigator الداخلي لـMaterialApp، فهي
+    // تبقى ضمن شجرة MultiProvider بلا أي ترتيب خاص.)
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => InventoryProvider()..load()),
@@ -51,6 +91,7 @@ class _InventoryAnalyzerAppState extends State<InventoryAnalyzerApp> {
         ChangeNotifierProvider(create: (_) => SettingsProvider()..load()),
       ],
       child: MaterialApp(
+        navigatorKey: _navigatorKey,
         title: 'محلل المخزون الذكي',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.light(),

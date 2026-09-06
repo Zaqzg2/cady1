@@ -20,6 +20,20 @@ extension ImageQualityHintMessage on ImageQualityHint {
 /// قبل إرسالها لمحرك الاستخراج. تصحيح المنظور (Perspective) الكامل والقص
 /// التفاعلي للحواف متروكان كخطوة تالية موثّقة في README — راجع القسم المخصص.
 class ImageImportService {
+  /// تصحيح دوران يدوي (٩٠° يمينًا/يسارًا) — إضافي فوق تصحيح EXIF التلقائي،
+  /// لأن EXIF قد يُفقَد أو يكون خاطئًا (شائع لصور تصل عبر تطبيق مشاركة آخر
+  /// أعاد ترميزها قبل الإرسال). دوران بزاوية قائمة فقط — دقيق بلا تقريب.
+  Uint8List rotate90(Uint8List bytes, {required bool clockwise}) {
+    try {
+      final decoded = img.decodeImage(bytes);
+      if (decoded == null) return bytes;
+      final rotated = img.copyRotate(decoded, angle: clockwise ? 90 : -90);
+      return Uint8List.fromList(img.encodeJpg(rotated, quality: 92));
+    } catch (_) {
+      return bytes; // فشل الدوران لا يجب أن يفقد الصورة الأصلية
+    }
+  }
+
   final ImagePicker _picker = ImagePicker();
 
   Future<Uint8List?> pickFromGallery() async {

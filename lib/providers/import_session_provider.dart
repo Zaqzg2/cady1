@@ -8,7 +8,9 @@ import '../services/column_detection_service.dart';
 import '../services/excel_import_service.dart';
 import '../services/fuzzy_matching_service.dart';
 import '../services/image_import_service.dart';
+import '../services/import_router.dart';
 import '../services/import_validation_service.dart';
+import '../services/incoming_file_service.dart';
 import '../services/ocr_service.dart';
 import '../services/pdf_import_service.dart';
 
@@ -29,6 +31,19 @@ class ImportSessionProvider extends ChangeNotifier {
   String? errorMessage;
   String? qualityWarning;
   bool isPdfTruncated = false;
+
+  /// آخر محرك OCR أنتج rows فعليًا في هذه الجلسة — null لما لا علاقة له بـOCR.
+  String? ocrProvider;
+  String? ocrModel;
+
+  /// آخر محاولة استيراد قابلة للإعادة (زر [إعادة المحاولة] عند فشل OCR).
+  Future<void> Function()? _retry;
+  bool get canRetry => _retry != null;
+
+  Future<void> retryLastImport() async {
+    final retry = _retry;
+    if (retry != null) await retry();
+  }
 
   ImportSourceType? sourceType;
   String fileName = '';
@@ -54,6 +69,8 @@ class ImportSessionProvider extends ChangeNotifier {
     columnMappings = [];
     _rawTable = [];
     _headerRowIndex = 0;
+    ocrProvider = null;
+    ocrModel = null;
     notifyListeners();
   }
 
@@ -73,6 +90,7 @@ class ImportSessionProvider extends ChangeNotifier {
     List<ProductCategory> existingCategories,
   ) async {
     reset();
+    _retry = () => importExcelOrCsv(bytes, name, existingProducts, existingBranches, existingCategories);
     sourceType = name.toLowerCase().endsWith('.csv') ? ImportSourceType.csv : ImportSourceType.excel;
     fileName = name;
     step = ImportStep.processing;
@@ -142,6 +160,7 @@ class ImportSessionProvider extends ChangeNotifier {
     List<ProductCategory> existingCategories,
   ) async {
     reset();
+    _retry = () => importImageBytes(rawBytes, name, engine, existingProducts, existingBranches, existingCategories);
     sourceType = ImportSourceType.image;
     fileName = name;
     step = ImportStep.processing;
@@ -150,12 +169,16 @@ class ImportSessionProvider extends ChangeNotifier {
     final hint = imageService.assessQuality(rawBytes);
     qualityWarning = hint?.messageAr;
 
-    final result = await engine.extractTable(rawBytes);
+    // دائمًا JPEG فعليًا هنا — image_import_service.dart يُعيد الترميز JPEG
+    // دومًا أثناء المعالجة المسبقة، أيًا كانت صيغة المصدر.
+    final result = await engine.extractTable(rawBytes, mimeType: 'image/jpeg');
     if (!result.success) {
       _fail(result.error ?? 'تعذّر استخراج البيانات من الصورة.');
       return;
     }
 
+    ocrProvider = result.provider == 'none' ? null : result.provider;
+    ocrModel = result.model;
     rows = result.rows;
     columnMappings = [];
     _matchAgainstCatalog(existingProducts);
@@ -175,26 +198,49 @@ class ImportSessionProvider extends ChangeNotifier {
     List<ProductCategory> existingCategories,
   ) async {
     reset();
+    _retry = () => importPdfBytes(pdfBytes, name, engine, existingProducts, existingBranches, existingCategories);
     sourceType = ImportSourceType.pdf;
     fileName = name;
     step = ImportStep.processing;
     notifyListeners();
 
+    // المسار المباشر أولًا: PDF الأصلي كاملًا مباشرة لمحرك OCR (Mistral يقرأ
+    // PDF أصليًا بلا تحويله لصور). أسرع وأدق. rasterization يُستخدَم فقط
+    // كـfallback عند فشل هذا المسار فعليًا (مثلًا عند استخدام OCR.space الذي
+    // قد لا يقبل PDF كبيرًا، أو عند أي فشل آخر).
+    final directResult = await engine.extractTable(pdfBytes, mimeType: 'application/pdf');
+    if (directResult.success) {
+      ocrProvider = directResult.provider == 'none' ? null : directResult.provider;
+      ocrModel = directResult.model;
+      rows = directResult.rows;
+      columnMappings = [];
+      _matchAgainstCatalog(existingProducts);
+      _runValidation(existingProducts, existingBranches, existingCategories);
+      step = ImportStep.review;
+      notifyListeners();
+      return;
+    }
+
     final rendered = await _pdfService.renderPagesAsImages(pdfBytes);
     if (!rendered.success) {
-      _fail(rendered.error ?? 'تعذّرت قراءة ملف PDF.');
+      _fail(rendered.error ?? directResult.error ?? 'تعذّرت قراءة ملف PDF.');
       return;
     }
     isPdfTruncated = rendered.truncated;
 
     final allRows = <ExtractedRow>[];
+    String? fallbackProvider;
+    String? fallbackModel;
     for (var i = 0; i < rendered.pageImages.length; i++) {
       final result = await engine.extractTable(
         rendered.pageImages[i],
+        mimeType: 'image/jpeg',
         contextHint: 'This is page ${i + 1} of a multi-page document.',
       );
       // فشل استخراج صفحة واحدة لا يُسقط بقية الصفحات (نفس مبدأ عدم الفشل الكامل)
       if (!result.success) continue;
+      fallbackProvider ??= result.provider == 'none' ? null : result.provider;
+      fallbackModel ??= result.model;
       for (final row in result.rows) {
         for (final cell in row.cells) {
           cell.pageNumber = i + 1;
@@ -204,15 +250,66 @@ class ImportSessionProvider extends ChangeNotifier {
     }
 
     if (allRows.isEmpty) {
-      _fail('لم يتم استخراج أي بيانات واضحة من صفحات الملف.');
+      _fail(directResult.error ?? 'لم يتم استخراج أي بيانات واضحة من صفحات الملف.');
       return;
     }
 
+    ocrProvider = fallbackProvider;
+    ocrModel = fallbackModel;
     rows = allRows;
     columnMappings = [];
     _matchAgainstCatalog(existingProducts);
     _runValidation(existingProducts, existingBranches, existingCategories);
     step = ImportStep.review;
+    notifyListeners();
+  }
+
+  // ---------------- استيراد موجَّه (Share Sheet / Open With) ----------------
+
+  final ImportRouter _router = const ImportRouter();
+
+  /// نقطة الدخول الموحّدة لأي ملف وارد من خارج شاشة الاستيراد العادية —
+  /// تحدّد النوع ثم تستدعي بالضبط نفس دوال الاستيراد أعلاه. لا يوجد أي منطق
+  /// استيراد منفصل لملفات المشاركة.
+  Future<void> importRoutedFile(
+    IncomingFile file,
+    OcrEngine engine,
+    List<Product> existingProducts,
+    List<Branch> existingBranches,
+    List<ProductCategory> existingCategories,
+  ) async {
+    switch (_router.classify(fileName: file.fileName, mimeType: file.mimeType)) {
+      case RoutedFileType.excel:
+      case RoutedFileType.csv:
+        await importExcelOrCsv(file.bytes, file.fileName, existingProducts, existingBranches, existingCategories);
+      case RoutedFileType.pdf:
+        await importPdfBytes(file.bytes, file.fileName, engine, existingProducts, existingBranches, existingCategories);
+      case RoutedFileType.image:
+        await importImageBytes(file.bytes, file.fileName, engine, existingProducts, existingBranches, existingCategories);
+      case RoutedFileType.unsupported:
+        reset();
+        fileName = file.fileName;
+        _fail('نوع هذا الملف غير مدعوم للاستيراد. الأنواع المدعومة: Excel، CSV، PDF، أو صورة (jpg/png/webp).');
+    }
+  }
+
+  // ---------------- إدخال يدوي (بلا ملف/OCR) ----------------
+
+  void startManualEntry({String name = 'إدخال يدوي'}) {
+    reset();
+    sourceType = ImportSourceType.manual;
+    fileName = name;
+    step = ImportStep.review;
+    notifyListeners();
+  }
+
+  void addBlankRow() {
+    rows.add(ExtractedRow(cells: []));
+    notifyListeners();
+  }
+
+  void removeRow(String rowId) {
+    rows.removeWhere((r) => r.id == rowId);
     notifyListeners();
   }
 

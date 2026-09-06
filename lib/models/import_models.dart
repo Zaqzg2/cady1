@@ -2,7 +2,7 @@ import 'package:uuid/uuid.dart';
 
 const _uuid = Uuid();
 
-enum ImportSourceType { excel, csv, pdf, image, camera }
+enum ImportSourceType { excel, csv, pdf, image, camera, manual }
 
 extension ImportSourceTypeLabel on ImportSourceType {
   String get labelAr => switch (this) {
@@ -11,6 +11,7 @@ extension ImportSourceTypeLabel on ImportSourceType {
         ImportSourceType.pdf => 'ملف PDF',
         ImportSourceType.image => 'صورة',
         ImportSourceType.camera => 'تصوير مستند',
+        ImportSourceType.manual => 'إدخال يدوي',
       };
 }
 
@@ -72,6 +73,11 @@ class ExtractedCell {
   /// 0.0 - 1.0
   double confidence;
 
+  /// null = ثقة حقيقية. 'unavailable' = المصدر (OCR.space) لا يوفّر ثقة فعلية
+  /// لكل حقل — [confidence] هنا افتراضية للفرز فقط، وتُعرض "الثقة غير متاحة"
+  /// بدل نسبة مختلَقة في شاشة المراجعة.
+  String? confidenceSource;
+
   int? pageNumber;
   int? rowNumber;
   int? columnNumber;
@@ -80,6 +86,7 @@ class ExtractedCell {
     required this.fieldType,
     required this.value,
     required this.confidence,
+    this.confidenceSource,
     this.pageNumber,
     this.rowNumber,
     this.columnNumber,
@@ -91,6 +98,7 @@ class ExtractedCell {
         'fieldType': fieldType.name,
         'value': value,
         'confidence': confidence,
+        'confidenceSource': confidenceSource,
         'pageNumber': pageNumber,
         'rowNumber': rowNumber,
         'columnNumber': columnNumber,
@@ -103,6 +111,7 @@ class ExtractedCell {
         ),
         value: map['value'] as String? ?? '',
         confidence: (map['confidence'] as num?)?.toDouble() ?? 0,
+        confidenceSource: map['confidenceSource'] as String?,
         pageNumber: map['pageNumber'] as int?,
         rowNumber: map['rowNumber'] as int?,
         columnNumber: map['columnNumber'] as int?,
@@ -157,6 +166,12 @@ class ExtractedRow {
         cells.where((c) => c.fieldType != FieldType.ignore).toList();
     if (relevant.isEmpty) return 1;
     return relevant.map((c) => c.confidence).reduce((a, b) => a < b ? a : b);
+  }
+
+  /// true عندما لا يوفّر مصدر هذا الصف (OCR.space) ثقة حقيقية لأي حقل فيه.
+  bool get confidenceUnavailable {
+    final relevant = cells.where((c) => c.fieldType != FieldType.ignore).toList();
+    return relevant.isNotEmpty && relevant.every((c) => c.confidenceSource == 'unavailable');
   }
 
   Map<String, dynamic> toMap() => {
@@ -216,6 +231,10 @@ class ImportRecord {
   int rawRowCount;
   int acceptedRowCount;
 
+  /// اسم/طراز محرك OCR الذي أنتج هذه البيانات — null لما لا علاقة له بـOCR.
+  String? ocrProvider;
+  String? ocrModel;
+
   ImportRecord({
     String? id,
     required this.sourceType,
@@ -223,6 +242,8 @@ class ImportRecord {
     DateTime? importedAt,
     this.rawRowCount = 0,
     this.acceptedRowCount = 0,
+    this.ocrProvider,
+    this.ocrModel,
   })  : id = id ?? _uuid.v4(),
         importedAt = importedAt ?? DateTime.now();
 
@@ -233,6 +254,8 @@ class ImportRecord {
         'importedAt': importedAt.toIso8601String(),
         'rawRowCount': rawRowCount,
         'acceptedRowCount': acceptedRowCount,
+        'ocrProvider': ocrProvider,
+        'ocrModel': ocrModel,
       };
 
   factory ImportRecord.fromMap(Map<dynamic, dynamic> map) => ImportRecord(
@@ -246,5 +269,7 @@ class ImportRecord {
             DateTime.now(),
         rawRowCount: map['rawRowCount'] as int? ?? 0,
         acceptedRowCount: map['acceptedRowCount'] as int? ?? 0,
+        ocrProvider: map['ocrProvider'] as String?,
+        ocrModel: map['ocrModel'] as String?,
       );
 }
