@@ -489,6 +489,95 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
   }
+
+  Widget _enginePill(String text) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(color: Colors.blueGrey.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(20)),
+        child: Text(text, style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey, fontWeight: FontWeight.w600)),
+      );
+
+  Color _mistralColor(MistralStatusIndicator? indicator) => switch (indicator) {
+        MistralStatusIndicator.connected => Colors.green,
+        MistralStatusIndicator.attentionNeeded => Colors.orange,
+        MistralStatusIndicator.invalid => Colors.red,
+        MistralStatusIndicator.inactive || null => Colors.grey,
+      };
+
+  Color _ocrSpaceColor(OcrSpaceStatusIndicator? indicator) => switch (indicator) {
+        OcrSpaceStatusIndicator.connected => Colors.green,
+        OcrSpaceStatusIndicator.attentionNeeded => Colors.orange,
+        OcrSpaceStatusIndicator.invalid => Colors.red,
+        OcrSpaceStatusIndicator.inactive || null => Colors.grey,
+      };
+}
+
+/// شارة حالة محرك OCR — تُبنى من قيم بدائية (لون/رمز/تسمية/رسالة) بدل النوع
+/// المحدَّد لكل محرك، حتى تُستخدَم لكل من Mistral وOCR.space بلا ازدواج.
+class _EngineStatusPill extends StatelessWidget {
+  final bool isTesting;
+  final bool hasKey;
+  final String? emoji;
+  final Color color;
+  final String? label;
+  final String message;
+
+  const _EngineStatusPill({
+    required this.isTesting,
+    required this.hasKey,
+    required this.emoji,
+    required this.color,
+    required this.label,
+    required this.message,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (isTesting) {
+      return _shell(
+        color: Colors.grey,
+        leading: const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+        label: 'جارٍ الاختبار...',
+        message: null,
+      );
+    }
+    if (!hasKey) {
+      return _shell(color: Colors.grey, leading: const Text('⚪', style: TextStyle(fontSize: 16)), label: 'غير مفعّل', message: message);
+    }
+    return _shell(
+      color: color,
+      leading: Text(emoji ?? '🟠', style: const TextStyle(fontSize: 16)),
+      label: label ?? 'يحتاج إعداد',
+      message: message,
+    );
+  }
+
+  Widget _shell({required Color color, required Widget leading, required String label, String? message}) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              leading,
+              const SizedBox(width: 8),
+              Text(label, style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: 13)),
+            ],
+          ),
+          if (message != null) ...[
+            const SizedBox(height: 6),
+            Text(message, style: const TextStyle(fontSize: 12.5)),
+          ],
+        ],
+      ),
+    );
+  }
 }
 
 class _SectionLabel extends StatelessWidget {
