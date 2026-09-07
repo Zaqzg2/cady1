@@ -21,7 +21,10 @@ class IncomingFileServiceImpl {
       // بناء لاحقة لواجهة التطبيق (موثَّق في الحزمة).
       ReceiveSharingIntent.instance.reset();
       if (media.isEmpty) return null;
-      return _toIncomingFile(media.first);
+      // await صريح هنا مهم فعليًا (وليس أسلوبًا فقط): بدونه، أي خطأ يُرمى
+      // داخل _toIncomingFile يصل بعد أن يكون catch هنا قد انتهى فعليًا (تسلسل
+      // Future غير مُنتظَر لا يلتقطه try/catch المحيط) فيفلت كخطأ غير مُمسوك.
+      return await _toIncomingFile(media.first);
     } catch (e) {
       debugPrint('IncomingFileService: فشل قراءة الملف الابتدائي: $e');
       return null;
@@ -49,9 +52,22 @@ class IncomingFileServiceImpl {
   }
 
   Future<IncomingFile> _toIncomingFile(SharedMediaFile media) async {
-    final bytes = await File(media.path).readAsBytes();
-    final fileName = media.path.split(Platform.pathSeparator).last;
-    return IncomingFile(fileName: fileName, mimeType: media.mimeType, bytes: bytes);
+    final file = File(media.path);
+    try {
+      final bytes = await file.readAsBytes();
+      final fileName = media.path.split(Platform.pathSeparator).last;
+      return IncomingFile(fileName: fileName, mimeType: media.mimeType, bytes: bytes);
+    } on FileSystemException catch (e) {
+      // نظريًا لا يجب أن يحدث هذا: الحزمة توثّق أنها تنسخ كل ملف (سواء وصل
+      // بصيغة content:// أو file://) إلى ملف حقيقي في ذاكرة تخزين مؤقتة
+      // قبل أن تُعيد media.path — لكن لو فشل هذا الافتراض في حالة نادرة، لا
+      // نملك طريقة Dart خالصة لقراءة content:// مباشرة بلا كود Android أصلي
+      // إضافي (Platform Channel جديد) — وهذا بالضبط نوع الاعتماديات الأصلية
+      // التي يتجنّبها هذا المشروع عمدًا لتقليل مخاطر CI (راجع README).
+      // نفشل هنا بوضوح ورسالة قابلة للتصرف، بدل استثناء خام أو تعليق صامت.
+      debugPrint('IncomingFileService: تعذّرت قراءة مسار الملف الوارد (${media.path}): $e');
+      throw StateError('تعذّرت قراءة الملف المُشارَك. جرّب المشاركة مرة أخرى، أو افتح التطبيق واستخدم "استيراد" مباشرة.');
+    }
   }
 
   void dispose() {
