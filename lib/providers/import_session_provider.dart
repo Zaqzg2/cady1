@@ -32,6 +32,10 @@ class ImportSessionProvider extends ChangeNotifier {
   String? qualityWarning;
   bool isPdfTruncated = false;
 
+  /// ماذا يمثّل هذا الاستيراد فعليًا (مخزون/أهداف) — القسم B، D من مواصفة
+  /// "مركز الاستيراد الموحّد". يحدد أي Commit تستدعيه شاشة المراجعة.
+  ImportTargetKind targetKind = ImportTargetKind.inventory;
+
   /// آخر محرك OCR أنتج rows فعليًا في هذه الجلسة — null لما لا علاقة له بـOCR.
   String? ocrProvider;
   String? ocrModel;
@@ -71,6 +75,7 @@ class ImportSessionProvider extends ChangeNotifier {
     _headerRowIndex = 0;
     ocrProvider = null;
     ocrModel = null;
+    targetKind = ImportTargetKind.inventory;
     notifyListeners();
   }
 
@@ -106,8 +111,86 @@ class ImportSessionProvider extends ChangeNotifier {
     _headerRowIndex = result.headerRowIndex;
     columnMappings = result.columnMappings;
     rows = result.rows;
-    _matchAgainstCatalog(existingProducts);
+    matchAgainstCatalog(existingProducts);
     _runValidation(existingProducts, existingBranches, existingCategories);
+
+    step = result.needsManualMapping ? ImportStep.columnMapping : ImportStep.review;
+    notifyListeners();
+  }
+
+  // ---------------- استيراد الأهداف (Excel/CSV) ----------------
+
+  /// كلمات صفوف الإجمالي/الملخص التي لا تمثّل صنفًا فعليًا (القسم J من
+  /// مواصفة الأهداف) — تُستبعَد تلقائيًا لكن بسبب واضح ومرئي، وليس بصمت.
+  static const _summaryRowKeywords = [
+    'الإجمالي الكلي',
+    'الإجمالي',
+    'إجمالي',
+    'المجموع الكلي',
+    'المجموع',
+    'grand total',
+    'total',
+  ];
+
+  bool _looksLikeSummaryRow(String productNameValue) {
+    final normalized = productNameValue.trim().toLowerCase();
+    if (normalized.isEmpty) return false;
+    return _summaryRowKeywords.any((kw) => normalized.contains(kw));
+  }
+
+  /// استيراد كشف أهداف من Excel/CSV (القسم I). يعيد استخدام نفس محرك قراءة
+  /// Excel والمطابقة الآمنة للأصناف (matchAgainstCatalog بعد إصلاحها — لا
+  /// دمج تلقائي بلا تأكيد المستخدم)، فقط target مختلف عند الحفظ.
+  Future<void> importGoalsExcelOrCsv(
+    Uint8List bytes,
+    String name,
+    List<Product> existingProducts,
+  ) async {
+    reset();
+    _retry = () => importGoalsExcelOrCsv(bytes, name, existingProducts);
+    targetKind = ImportTargetKind.goals;
+    sourceType = name.toLowerCase().endsWith('.csv') ? ImportSourceType.csv : ImportSourceType.excel;
+    fileName = name;
+    step = ImportStep.processing;
+    notifyListeners();
+
+    final result = await _excelService.importFromBytes(bytes, name);
+    if (!result.success) {
+      _fail(result.error ?? 'فشل استيراد الملف.');
+      return;
+    }
+
+    _rawTable = result.rawTable;
+    _headerRowIndex = result.headerRowIndex;
+    columnMappings = result.columnMappings;
+    rows = result.rows;
+
+    // استبعاد صفوف الإجمالي/الملخص أولًا — قبل المطابقة، حتى لا تُقترَح
+    // "الإجمالي الكلي" كاسم صنف أصلًا.
+    for (final row in rows) {
+      final nameValue = row.cellOf(FieldType.productName)?.value ?? '';
+      if (_looksLikeSummaryRow(nameValue)) {
+        row.status = RowReviewStatus.rejected;
+        row.validationIssues.add('استُبعِد تلقائيًا: يبدو صف إجمالي/ملخص وليس صنفًا (يمكن اعتماده يدويًا إن كان هذا خطأ).');
+      }
+    }
+
+    matchAgainstCatalog(existingProducts);
+
+    // تحقّق مخصَّص للأهداف: صف بلا مطابقة صنف مؤكَّدة = لا يمكن حفظه كهدف
+    // (الأهداف تُضبط لأصناف موجودة فعلًا في القاموس، بخلاف استيراد المخزون
+    // الذي قد ينشئ أصنافًا جديدة) — القسم G: لا يُستخدَم الاسم وحده كمعرِّف.
+    for (final row in rows) {
+      if (row.status == RowReviewStatus.rejected) continue;
+      if (row.matchedProductId == null) {
+        row.validationIssues.add('لم يتم تأكيد مطابقة هذا الاسم بصنف موجود — راجع الاقتراح أو اختر صنفًا قبل الاعتماد.');
+      }
+      final hasAnyGoal = [FieldType.goal1, FieldType.goal2, FieldType.goal3]
+          .any((f) => row.cellOf(f) != null && row.cellOf(f)!.value.trim().isNotEmpty);
+      if (!hasAnyGoal) {
+        row.validationIssues.add('لا يحتوي هذا الصف أي قيمة هدف (1 أو 2 أو 3).');
+      }
+    }
 
     step = result.needsManualMapping ? ImportStep.columnMapping : ImportStep.review;
     notifyListeners();
@@ -122,7 +205,7 @@ class ImportSessionProvider extends ChangeNotifier {
   ) {
     columnMappings = newMappings;
     rows = _excelService.buildRows(_rawTable, _headerRowIndex, newMappings);
-    _matchAgainstCatalog(existingProducts);
+    matchAgainstCatalog(existingProducts);
     _runValidation(existingProducts, existingBranches, existingCategories);
     step = ImportStep.review;
     notifyListeners();
@@ -141,7 +224,7 @@ class ImportSessionProvider extends ChangeNotifier {
     final headers = editedTable.isNotEmpty ? editedTable[0] : <String>[];
     columnMappings = _columnDetector.detectColumns(headers);
     rows = _excelService.buildRows(_rawTable, _headerRowIndex, columnMappings);
-    _matchAgainstCatalog(existingProducts);
+    matchAgainstCatalog(existingProducts);
     _runValidation(existingProducts, existingBranches, existingCategories);
     step = _columnDetector.needsManualMapping(columnMappings)
         ? ImportStep.columnMapping
@@ -181,7 +264,7 @@ class ImportSessionProvider extends ChangeNotifier {
     ocrModel = result.model;
     rows = result.rows;
     columnMappings = [];
-    _matchAgainstCatalog(existingProducts);
+    matchAgainstCatalog(existingProducts);
     _runValidation(existingProducts, existingBranches, existingCategories);
     step = ImportStep.review;
     notifyListeners();
@@ -214,7 +297,7 @@ class ImportSessionProvider extends ChangeNotifier {
       ocrModel = directResult.model;
       rows = directResult.rows;
       columnMappings = [];
-      _matchAgainstCatalog(existingProducts);
+      matchAgainstCatalog(existingProducts);
       _runValidation(existingProducts, existingBranches, existingCategories);
       step = ImportStep.review;
       notifyListeners();
@@ -258,7 +341,7 @@ class ImportSessionProvider extends ChangeNotifier {
     ocrModel = fallbackModel;
     rows = allRows;
     columnMappings = [];
-    _matchAgainstCatalog(existingProducts);
+    matchAgainstCatalog(existingProducts);
     _runValidation(existingProducts, existingBranches, existingCategories);
     step = ImportStep.review;
     notifyListeners();
@@ -315,7 +398,10 @@ class ImportSessionProvider extends ChangeNotifier {
 
   // ---------------- مطابقة الأصناف + التحقق + إجراءات المراجعة ----------------
 
-  void _matchAgainstCatalog(List<Product> existingProducts) {
+  /// عام عمدًا (وليس خاصًا) — قابل للاختبار مباشرة (راجع
+  /// test/product_matching_regression_test.dart) بلا حاجة لمرور الجلسة
+  /// كاملة عبر OCR/Excel وهمي فقط لأجل الوصول لهذا المنطق.
+  void matchAgainstCatalog(List<Product> existingProducts) {
     for (final row in rows) {
       final nameCell = row.cellOf(FieldType.productName);
       if (nameCell == null) continue;
@@ -340,9 +426,17 @@ class ImportSessionProvider extends ChangeNotifier {
       row.matchSuggestionProductId = best.product.id;
       row.matchSuggestionName = best.product.name;
       row.matchScore = best.score;
-      if (FuzzyMatchingService.isStrongEnoughToSuggest(best.score)) {
-        row.matchedProductId = best.product.id;
-      }
+      // ⚠️ لا تُثبَّت matchedProductId هنا تلقائيًا مهما ارتفعت نسبة تشابه
+      // الاسم النصي. isStrongEnoughToSuggest (55%) عتبة "يستحق العرض
+      // كاقتراح للمراجعة"، وليست "مؤكَّد بلا حاجة لمراجعة بشرية" — استخدامها
+      // هنا كان يُثبِّت المطابقة صامتًا قبل أن يرى المستخدم شاشة المراجعة
+      // أصلًا، فيختفي شريط الاقتراح (Approve/Change/Ignore) ويُدمَج أي صنفين
+      // متشابهي الاسم فعليًا عند الحفظ (مثال حقيقي: "حليب 200 مل" و"حليب 125
+      // مل" يتشابهان نصيًا فوق 55% لكنهما صنفان مختلفان تمامًا).
+      // الوحيد المسموح له بتثبيت matchedProductId تلقائيًا فعليًا هو تطابق
+      // Barcode الحرفي أعلاه (هوية عمل قاطعة، وليست تخمين تشابه نصي).
+      // التثبيت الفعلي هنا الآن يحدث فقط عبر فعل صريح من المستخدم:
+      // acceptSuggestedProduct() عند الضغط على [✓ اعتماد] في شريط الاقتراح.
     }
   }
 

@@ -66,19 +66,6 @@ class MistralOcrConfig {
     this.model = 'mistral-ocr-latest',
     this.endpoint = 'https://api.mistral.ai/v1/ocr',
   });
-
-  /// يُشتَق من endpoint بدل تثبيت رابط منفصل — .../v1/ocr → .../v1/models
-  /// (رابط خفيف رسميًا لاختبار المفتاح بلا أي تكلفة OCR فعلية — القسم ١٦).
-  Uri get modelsUri {
-    final uri = Uri.parse(endpoint);
-    final segments = List<String>.from(uri.pathSegments);
-    if (segments.isNotEmpty && segments.last == 'ocr') {
-      segments[segments.length - 1] = 'models';
-    } else if (!segments.contains('models')) {
-      segments.add('models');
-    }
-    return uri.replace(pathSegments: segments);
-  }
 }
 
 /// طبقة HTTP / Authentication / Errors المستقلة لـ Mistral (القسم ٢٧).
@@ -87,7 +74,7 @@ class MistralOcrConfig {
 class MistralApiClient {
   final MistralOcrConfig config;
   static const _timeout = Duration(seconds: 90); // OCR فعلي قد يأخذ وقتًا أطول من فحص مفتاح بسيط
-  static const _healthCheckTimeout = Duration(seconds: 15);
+  static const _healthCheckTimeout = Duration(seconds: 25); // صورة 1×1 لكنها تمر بمسار OCR الحقيقي، أطول قليلًا من GET بسيط
 
   const MistralApiClient({this.config = const MistralOcrConfig()});
 
@@ -111,8 +98,13 @@ class MistralApiClient {
         'Authorization': 'Bearer $apiKey',
       };
 
-  /// اختبار اتصال خفيف (القسم ١٦) — GET /v1/models، بلا أي استدعاء OCR فعلي
-  /// (لا داعٍ لدفع تكلفة معالجة مستند فقط للتحقق من صلاحية المفتاح).
+  /// اختبار اتصال حقيقي عبر نفس endpoint وnفس رؤوس الاستخدام الفعلي تمامًا
+  /// (POST /v1/ocr) — وليس GET /v1/models كما كان سابقًا. السبب: بعض مفاتيح
+  /// Mistral قد تكون مُقيَّدة (scoped) لخدمة OCR فقط بلا صلاحية على endpoint
+  /// النماذج، فيُعطي GET /v1/models رفضًا رغم أن المفتاح يعمل فعليًا في OCR
+  /// الحقيقي — وهذا بالضبط العطل المُبلَّغ عنه (اختبار المفتاح يفشل بينما
+  /// OCR ينجح بنفس المفتاح). صورة PNG بيضاء 1×1 صالحة فعليًا، بلا طلب
+  /// Annotation أو ثقة، تكفي لاختبار المسار الحقيقي بأقل تكلفة معالجة ممكنة.
   Future<MistralHealthResult> testConnection(String apiKey) async {
     final trimmed = apiKey.trim();
     if (trimmed.isEmpty) {
@@ -120,13 +112,25 @@ class MistralApiClient {
     }
     try {
       final response = await http
-          .get(config.modelsUri, headers: _headers(trimmed))
+          .post(
+            Uri.parse(config.endpoint),
+            headers: _headers(trimmed),
+            body: jsonEncode({
+              'model': config.model,
+              'document': {'type': 'image_url', 'image_url': _tinyPngDataUri},
+            }),
+          )
           .timeout(_healthCheckTimeout);
       return classifyHttpResponse(response);
     } catch (e) {
       return classifyException(e);
     }
   }
+
+  // صورة PNG بيضاء 1×1 بكسل صالحة فعليًا — كافية لاختبار مسار OCR الحقيقي
+  // (نفس endpoint ونفس الرؤوس) بأقل تكلفة معالجة ممكنة لأجل زر [اختبار Mistral].
+  static const _tinyPngDataUri =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
   /// نداء OCR خام — تُبنى معاملات الطلب في MistralOcrService، هذه الطبقة
   /// مسؤولة فقط عن الاتصال HTTP نفسه وتصنيف أي فشل.

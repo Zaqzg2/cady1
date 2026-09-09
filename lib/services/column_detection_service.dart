@@ -67,6 +67,14 @@ class ColumnDetectionService {
       'الفرع',
       'الفروع',
       'اسم الفرع',
+      'الفرع الحالي',
+      'branch',
+      'branch name',
+      'المخزن',
+      'المستودع',
+      'warehouse',
+      'الموقع',
+      'location',
     ],
     FieldType.category: [
       'التصنيف',
@@ -74,6 +82,12 @@ class ColumnDetectionService {
       'القسم',
       'المجموعة',
     ],
+    // القسم I من مواصفة الأهداف — كشوف الأهداف الشهرية تحديدًا.
+    FieldType.year: ['السنة', 'عام', 'year'],
+    FieldType.month: ['الشهر', 'شهر', 'month'],
+    FieldType.goal1: ['هدف 1', 'هدف1', 'الهدف الأول', 'goal 1', 'goal1', 'الفئة الأولى'],
+    FieldType.goal2: ['هدف 2', 'هدف2', 'الهدف الثاني', 'goal 2', 'goal2', 'الفئة الثانية'],
+    FieldType.goal3: ['هدف 3', 'هدف3', 'الهدف الثالث', 'goal 3', 'goal3', 'الفئة الثالثة'],
   };
 
   final _fuzzy = FuzzyMatchingService();

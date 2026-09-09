@@ -793,6 +793,130 @@ class InventoryProvider extends ChangeNotifier {
     return accepted;
   }
 
+  /// ملخص استيراد الأهداف — كل صف ينتهي بأحد: مضاف/محدَّث/متجاهَل، بسبب واضح
+  /// دائمًا (القسم AB: لا صفوف تختفي بصمت).
+  Future<GoalImportSummary> commitGoalRows({
+    required List<ExtractedRow> rows,
+    required String fileName,
+  }) async {
+    await ensureDefaultBranch();
+    var imported = 0;
+    var updated = 0;
+    final skipped = <String>[]; // كل عنصر: "اسم الصف — السبب"
+    // يتتبّع ما عُولِج فعليًا ضمن هذه الدفعة نفسها، حتى لو تكرّر نفس
+    // الصنف+الفرع+الشهر في صفّين من نفس الملف (goals لا تُحدَّث إلا بعد
+    // load() في النهاية، فلا تعكس تكرارات داخل نفس التشغيلة بمفردها).
+    final processedThisRun = <String, MonthlyGoal>{};
+    String keyOf(String productId, String branchId, int year, int month) =>
+        '$productId|$branchId|$year|$month';
+
+    for (final row in rows) {
+      if (row.status != RowReviewStatus.accepted) continue;
+
+      final nameCell = row.cellOf(FieldType.productName);
+      final displayName = nameCell?.value.trim() ?? '(بلا اسم)';
+
+      // دفاع إضافي وقت الحفظ نفسه — لا يعتمد فقط على status الذي قد يتغيّر
+      // بضغطة "اعتماد الكل" (القسم J: لا تُحفَظ صفوف الإجمالي كصنف أبدًا).
+      if (nameCell == null || _looksLikeGoalsSummaryRow(nameCell.value)) {
+        skipped.add('$displayName — صف إجمالي/ملخص، وليس صنفًا');
+        continue;
+      }
+
+      if (row.matchedProductId == null) {
+        skipped.add('$displayName — لم تُؤكَّد مطابقته بصنف موجود في القاموس');
+        continue;
+      }
+      final product = productById(row.matchedProductId!);
+      if (product == null) {
+        skipped.add('$displayName — الصنف المرتبط لم يعد موجودًا');
+        continue;
+      }
+
+      final branchCell = row.cellOf(FieldType.branch);
+      if (branchCell == null || branchCell.value.trim().isEmpty) {
+        skipped.add('$displayName — لم يُحدَّد الفرع (الأهداف تتطلب فرعًا صريحًا، بلا افتراض تلقائي)');
+        continue;
+      }
+      final branch = await getOrCreateBranch(branchCell.value);
+
+      final now = DateTime.now();
+      final year = int.tryParse(row.cellOf(FieldType.year)?.value.trim() ?? '') ?? now.year;
+      final month = int.tryParse(row.cellOf(FieldType.month)?.value.trim() ?? '') ?? now.month;
+
+      double? parseGoal(FieldType f) {
+        final raw = row.cellOf(f)?.value.trim();
+        if (raw == null || raw.isEmpty) return null;
+        return double.tryParse(raw.replaceAll(',', ''));
+      }
+
+      final g1 = parseGoal(FieldType.goal1);
+      final g2 = parseGoal(FieldType.goal2);
+      final g3 = parseGoal(FieldType.goal3);
+      if (g1 == null && g2 == null && g3 == null) {
+        skipped.add('$displayName — لا توجد أي قيمة هدف صالحة (1 أو 2 أو 3)');
+        continue;
+      }
+
+      final existing = goals.where((g) =>
+          g.productId == product.id && g.branchId == branch.id && g.year == year && g.month == month);
+      final key = keyOf(product.id, branch.id, year, month);
+      final alreadyProcessed = processedThisRun[key];
+
+      if (alreadyProcessed != null) {
+        if (g1 != null) alreadyProcessed.goal1 = g1;
+        if (g2 != null) alreadyProcessed.goal2 = g2;
+        if (g3 != null) alreadyProcessed.goal3 = g3;
+        await saveGoal(alreadyProcessed);
+        updated++;
+      } else if (existing.isNotEmpty) {
+        final g = existing.first;
+        if (g1 != null) g.goal1 = g1;
+        if (g2 != null) g.goal2 = g2;
+        if (g3 != null) g.goal3 = g3;
+        await saveGoal(g);
+        processedThisRun[key] = g;
+        updated++;
+      } else {
+        final created = MonthlyGoal(
+          productId: product.id,
+          branchId: branch.id,
+          year: year,
+          month: month,
+          goal1: g1 ?? 0,
+          goal2: g2 ?? 0,
+          goal3: g3 ?? 0,
+        );
+        await saveGoal(created);
+        processedThisRun[key] = created;
+        imported++;
+      }
+    }
+
+    await _repo.saveImportRecord(ImportRecord(
+      sourceType: ImportSourceType.excel,
+      fileName: fileName,
+      rawRowCount: rows.length,
+      acceptedRowCount: imported + updated,
+    ));
+    await load();
+
+    return GoalImportSummary(
+      totalRows: rows.length,
+      importedRows: imported,
+      updatedRows: updated,
+      skippedRows: skipped.length,
+      skipReasons: skipped,
+    );
+  }
+
+  bool _looksLikeGoalsSummaryRow(String value) {
+    final normalized = value.trim().toLowerCase();
+    if (normalized.isEmpty) return true;
+    const keywords = ['الإجمالي', 'إجمالي', 'المجموع', 'grand total', 'total'];
+    return keywords.any((kw) => normalized.contains(kw));
+  }
+
   Future<Product> _resolveProduct(ExtractedRow row, String extractedName) async {
     if (row.forceNewProduct) {
       final product = Product(name: extractedName.trim());
@@ -800,16 +924,20 @@ class InventoryProvider extends ChangeNotifier {
       return product;
     }
 
+    // مطابقة مؤكَّدة فعليًا فقط: إما Barcode حرفي (يُثبَّت تلقائيًا في
+    // _matchAgainstCatalog)، أو موافقة صريحة من المستخدم عبر
+    // acceptSuggestedProduct() في شاشة المراجعة.
     if (row.matchedProductId != null) {
       final existing = productById(row.matchedProductId!);
       if (existing != null) return existing;
     }
 
-    final match = bestProductMatch(extractedName);
-    if (match != null && FuzzyMatchingService.isStrongEnoughToSuggest(match.score)) {
-      return match.product;
-    }
-
+    // ⚠️ لا نُخمِّن هنا. لو وصلنا لهذه النقطة فالمستخدم لم يوافق على أي
+    // اقتراح مطابقة (matchedProductId ما زال null) ولم يفرض "صنف جديد"
+    // صراحة أيضًا — الاحتمالان معًا يعنيان فقط أن الصف اعتُمِد دون أن
+    // يتفاعل المستخدم مع اقتراح المطابقة تحديدًا. الخيار الآمن الوحيد هنا هو
+    // إنشاء صنف جديد، وليس تخمين مطابقة بنسبة تشابه نصي قد تكون بين صنفين
+    // مختلفين فعليًا (سبب أصلي لدمج "حليب 200 مل" مع "حليب 125 مل" سابقًا).
     final product = Product(name: extractedName.trim());
     await saveProduct(product);
     return product;

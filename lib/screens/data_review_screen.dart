@@ -20,6 +20,39 @@ class DataReviewScreen extends StatelessWidget {
     }
 
     final inventoryProvider = context.read<InventoryProvider>();
+
+    if (session.targetKind == ImportTargetKind.goals) {
+      final summary = await inventoryProvider.commitGoalRows(
+        rows: session.rows,
+        fileName: session.fileName,
+      );
+      session.reset();
+      if (!context.mounted) return;
+      Navigator.of(context).popUntil((route) => route.isFirst);
+      final message = summary.skippedRows == 0
+          ? 'تم حفظ ${summary.importedRows + summary.updatedRows} هدفًا (${summary.importedRows} جديد، ${summary.updatedRows} محدَّث).'
+          : 'تم الحفظ: ${summary.importedRows} جديد، ${summary.updatedRows} محدَّث، ${summary.skippedRows} متجاهَل. اضغط لعرض الأسباب.';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(message),
+        action: summary.skippedRows == 0
+            ? null
+            : SnackBarAction(
+                label: 'الأسباب',
+                onPressed: () => showDialog(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    title: const Text('أسباب الاستبعاد'),
+                    content: SingleChildScrollView(
+                      child: Text(summary.skipReasons.join('\n')),
+                    ),
+                    actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('إغلاق'))],
+                  ),
+                ),
+              ),
+      ));
+      return;
+    }
+
     final count = await inventoryProvider.commitAcceptedRows(
       rows: session.rows,
       sourceType: session.sourceType!,

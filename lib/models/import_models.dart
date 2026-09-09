@@ -32,9 +32,21 @@ enum FieldType {
   expiryDate,
   branch,
   category,
+  // حقول خاصة باستيراد الأهداف فقط (القسم H، I) — لا علاقة لها بالمخزون.
+  year,
+  month,
+  goal1,
+  goal2,
+  goal3,
   ignore,
   unknown,
 }
+
+/// ماذا يمثّل هذا الاستيراد فعليًا؟ يحدد أي مسار Commit يُستدعى من شاشة
+/// المراجعة (InventoryProvider.commitAcceptedRows للمخزون، أو
+/// commitGoalRows للأهداف) — كلاهما يمر بنفس Pipeline (Preview → Mapping →
+/// Validation → Review) قبل ذلك تمامًا (القسم D: "كل نوع يستخدم نفس pipeline").
+enum ImportTargetKind { inventory, goals }
 
 extension FieldTypeLabel on FieldType {
   String get labelAr => switch (this) {
@@ -49,6 +61,11 @@ extension FieldTypeLabel on FieldType {
         FieldType.expiryDate => 'تاريخ الانتهاء',
         FieldType.branch => 'الفرع',
         FieldType.category => 'التصنيف',
+        FieldType.year => 'السنة',
+        FieldType.month => 'الشهر',
+        FieldType.goal1 => 'الهدف 1',
+        FieldType.goal2 => 'الهدف 2',
+        FieldType.goal3 => 'الهدف 3',
         FieldType.ignore => 'تجاهل',
         FieldType.unknown => 'غير معروف',
       };
@@ -219,6 +236,23 @@ class ColumnMapping {
     required this.columnIndex,
     required this.header,
     required this.mappedField,
+  });
+}
+
+/// ملخص استيراد أهداف (القسم AB) — كل الأعداد الحقيقية، بلا أرقام ثابتة.
+class GoalImportSummary {
+  final int totalRows;
+  final int importedRows;
+  final int updatedRows;
+  final int skippedRows;
+  final List<String> skipReasons;
+
+  const GoalImportSummary({
+    required this.totalRows,
+    required this.importedRows,
+    required this.updatedRows,
+    required this.skippedRows,
+    required this.skipReasons,
   });
 }
 

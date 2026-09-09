@@ -1,12 +1,16 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/goal_models.dart';
+import '../providers/import_session_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/settings_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
+import 'column_mapping_screen.dart';
 import 'dashboard_widgets.dart';
+import 'data_review_screen.dart';
 
 const _arabicMonths = [
   'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
@@ -41,6 +45,41 @@ class _GoalsScreenState extends State<GoalsScreen> with SingleTickerProviderStat
   void dispose() {
     _tabController.dispose();
     super.dispose();
+  }
+
+  Future<void> _importGoals(BuildContext context) async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['xlsx', 'xls', 'csv'],
+      withData: true, // ضروري على الويب لضمان توفر bytes مباشرة بلا مسار ملف
+    );
+    if (result == null || result.files.isEmpty || !context.mounted) return;
+    final file = result.files.first;
+    if (file.bytes == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تعذّرت قراءة الملف المختار.')));
+      return;
+    }
+
+    final session = context.read<ImportSessionProvider>();
+    final inv = context.read<InventoryProvider>();
+    // نفس Pipeline الموحَّد (Preview → Mapping → Validation → Review →
+    // Commit) المستخدَم لاستيراد المخزون تمامًا — فقط بوجهة حفظ مختلفة
+    // (commitGoalRows بدل commitAcceptedRows)، وبلا تدخّل من الشاشة نفسها في
+    // أي منطق تحليل أو مطابقة (القسم ٢٨: لا OCR/Import parsing في Screen).
+    await session.importGoalsExcelOrCsv(file.bytes!, file.name, inv.products);
+    if (!context.mounted) return;
+
+    switch (session.step) {
+      case ImportStep.columnMapping:
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ColumnMappingScreen()));
+      case ImportStep.review:
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DataReviewScreen()));
+      case ImportStep.error:
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(session.errorMessage ?? 'تعذّر الاستيراد.')));
+      case ImportStep.idle:
+      case ImportStep.processing:
+        break;
+    }
   }
 
   Future<void> _openForm(BuildContext context, {MonthlyGoal? existing}) async {
@@ -186,7 +225,23 @@ class _GoalsScreenState extends State<GoalsScreen> with SingleTickerProviderStat
         ],
       ),
       floatingActionButton: _tabController.index == 0
-          ? FloatingActionButton(onPressed: () => _openForm(context), child: const Icon(Icons.add))
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FloatingActionButton.small(
+                  heroTag: 'goals_import_fab',
+                  onPressed: () => _importGoals(context),
+                  tooltip: 'استيراد أهداف',
+                  child: const Icon(Icons.file_upload_outlined),
+                ),
+                const SizedBox(height: 10),
+                FloatingActionButton(
+                  heroTag: 'goals_add_fab',
+                  onPressed: () => _openForm(context),
+                  child: const Icon(Icons.add),
+                ),
+              ],
+            )
           : null,
     );
   }
