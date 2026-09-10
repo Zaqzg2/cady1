@@ -10,7 +10,12 @@ import '../widgets/common_widgets.dart';
 /// من تكرار Barcode/رقم الصنف قبل الحفظ.
 class ProductEditScreen extends StatefulWidget {
   final Product? existing;
-  const ProductEditScreen({super.key, this.existing});
+
+  /// تعبئة تلقائية عند فتح الشاشة لإنشاء صنف جديد من نتيجة مسح Barcode لم
+  /// يُعثر لها على صنف (القسم V) — يُتجاهل إن كان [existing] غير null.
+  final String? prefilledBarcode;
+
+  const ProductEditScreen({super.key, this.existing, this.prefilledBarcode});
 
   @override
   State<ProductEditScreen> createState() => _ProductEditScreenState();
@@ -34,7 +39,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     final settings = context.read<SettingsProvider>();
     _name = TextEditingController(text: p?.name ?? '');
     _itemNumber = TextEditingController(text: p?.itemNumber ?? '');
-    _barcode = TextEditingController(text: p?.barcode ?? '');
+    _barcode = TextEditingController(text: p?.barcode ?? widget.prefilledBarcode ?? '');
     _unit = TextEditingController(text: p?.unit ?? '');
     _alternateNames = TextEditingController(text: p?.alternateNames.join('، ') ?? '');
     _minStock = TextEditingController(text: (p?.minStock ?? 0).toStringAsFixed(0));

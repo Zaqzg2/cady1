@@ -11,6 +11,7 @@ import '../services/sorting_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
 import '../widgets/status_styles.dart';
+import 'barcode_scanner_screen.dart';
 import 'branch_detail_screen.dart';
 import 'product_edit_screen.dart';
 
@@ -73,11 +74,56 @@ class _InventoryAnalysisScreenState extends State<InventoryAnalysisScreen>
     });
   }
 
+  /// مسح Barcode (القسم V): وُجد → فتح الصنف مباشرة. لم يوجد → عرض خيار
+  /// إنشاء صنف جديد بالـ Barcode مُعبَّأً تلقائيًا. لا صمت في الحالتين.
+  Future<void> _scanBarcode(BuildContext context) async {
+    final code = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => const BarcodeScannerScreen()),
+    );
+    if (code == null || code.isEmpty || !context.mounted) return;
+
+    final products = context.read<InventoryProvider>().products;
+    final matches = products.where((p) => p.barcode == code);
+    // ⚠️ لا نستخدم firstOrNullSafe هنا عمدًا — تلك الإضافة خاصة (private)
+    // بملف inventory_provider.dart نفسه (اسم الـ extension نفسه _مسبوق بشرطة
+    // سفلية)، فغير قابلة للاستخدام من ملف آخر رغم أن اسم الخاصية ذاتها يبدو
+    // عامًا. نمط يدوي بسيط بدلًا منه، بلا أي اعتمادية إضافية.
+    final match = matches.isEmpty ? null : matches.first;
+    if (match != null) {
+      Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProductEditScreen(existing: match)));
+      return;
+    }
+
+    if (!context.mounted) return;
+    final shouldCreate = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('الصنف غير موجود'),
+        content: Text('لا يوجد صنف بـ Barcode: $code'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('إضافة صنف جديد')),
+        ],
+      ),
+    );
+    if (shouldCreate == true && context.mounted) {
+      Navigator.of(context)
+          .push(MaterialPageRoute(builder: (_) => ProductEditScreen(prefilledBarcode: code)));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('تحليل المخزون'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.qr_code_scanner_rounded),
+            tooltip: 'مسح Barcode',
+            onPressed: () => _scanBarcode(context),
+          ),
+        ],
         bottom: TabBar(
           controller: _tabController,
           tabs: const [
