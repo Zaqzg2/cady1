@@ -24,8 +24,11 @@ jobs:
 
       - name: Static analysis
         run: flutter analyze
-        # لا نوقف البناء بسبب تحذيرات التحليل الأولى — فقط أخطاء الترجمة الحقيقية
-        continue-on-error: true
+        # بلا continue-on-error (قسم BUILD من المواصفة): أي خطأ تحليل حقيقي
+        # يُسقط الخطوة فعليًا الآن، فيظهر فورًا بدل أن يظهر لاحقًا كخطأ بناء غامض.
+
+      - name: Run tests
+        run: flutter test
 
       # القسم 3 من دليل الأعطال: بعض الحزم (خصوصًا ما يعتمد على
       # flutter_plugin_android_lifecycle مثل file_picker/image_picker) تتطلب

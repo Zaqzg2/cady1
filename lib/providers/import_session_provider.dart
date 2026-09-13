@@ -118,7 +118,52 @@ class ImportSessionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ---------------- استيراد الأهداف (Excel/CSV) ----------------
+  // ---------------- استيراد الوارد (Excel/CSV) ----------------
+
+  /// استيراد كشف وارد (القسم P) — صنف + فرع + كمية إلزاميان، رقم
+  /// المستند/المورد اختياريان (يُدمَجان في ملاحظة الحركة). يعيد استخدام
+  /// نفس مطابقة الأصناف الآمنة (matchAgainstCatalog)، لكن بخلاف الأهداف:
+  /// صنف غير موجود في القاموس هنا يُنشأ صنفًا جديدًا (نفس منطق استيراد
+  /// المخزون العادي)، لأن وارد صنف جديد فعليًا سيناريو طبيعي شائع.
+  Future<void> importIncomingExcelOrCsv(
+    Uint8List bytes,
+    String name,
+    List<Product> existingProducts,
+  ) async {
+    reset();
+    _retry = () => importIncomingExcelOrCsv(bytes, name, existingProducts);
+    targetKind = ImportTargetKind.incoming;
+    sourceType = name.toLowerCase().endsWith('.csv') ? ImportSourceType.csv : ImportSourceType.excel;
+    fileName = name;
+    step = ImportStep.processing;
+    notifyListeners();
+
+    final result = await _excelService.importFromBytes(bytes, name);
+    if (!result.success) {
+      _fail(result.error ?? 'فشل استيراد الملف.');
+      return;
+    }
+
+    _rawTable = result.rawTable;
+    _headerRowIndex = result.headerRowIndex;
+    columnMappings = result.columnMappings;
+    rows = result.rows;
+    matchAgainstCatalog(existingProducts);
+
+    for (final row in rows) {
+      final branchCell = row.cellOf(FieldType.branch);
+      if (branchCell == null || branchCell.value.trim().isEmpty) {
+        row.validationIssues.add('لم يُحدَّد الفرع — الوارد يتطلب فرعًا صريحًا، بلا افتراض تلقائي.');
+      }
+      final qty = row.cellOf(FieldType.quantity);
+      if (qty == null || double.tryParse(qty.value.trim().replaceAll(',', '')) == null) {
+        row.validationIssues.add('الكمية غير موجودة أو غير رقمية.');
+      }
+    }
+
+    step = result.needsManualMapping ? ImportStep.columnMapping : ImportStep.review;
+    notifyListeners();
+  }
 
   /// كلمات صفوف الإجمالي/الملخص التي لا تمثّل صنفًا فعليًا (القسم J من
   /// مواصفة الأهداف) — تُستبعَد تلقائيًا لكن بسبب واضح ومرئي، وليس بصمت.
@@ -184,6 +229,13 @@ class ImportSessionProvider extends ChangeNotifier {
       if (row.status == RowReviewStatus.rejected) continue;
       if (row.matchedProductId == null) {
         row.validationIssues.add('لم يتم تأكيد مطابقة هذا الاسم بصنف موجود — راجع الاقتراح أو اختر صنفًا قبل الاعتماد.');
+      }
+      // القسم Z: كانت هذه الفحص مفقودًا هنا فعليًا (موجود فقط في الوارد
+      // والجرد) فلا يظهر تنبيه الفرع الناقص إلا بعد الضغط على "اعتماد"
+      // في commitGoalRows — الآن يظهر أثناء المراجعة نفسها كبقية الأنواع.
+      final branchCell = row.cellOf(FieldType.branch);
+      if (branchCell == null || branchCell.value.trim().isEmpty) {
+        row.validationIssues.add('لم يُحدَّد الفرع — الأهداف تتطلب فرعًا صريحًا، بلا افتراض تلقائي.');
       }
       final hasAnyGoal = [FieldType.goal1, FieldType.goal2, FieldType.goal3]
           .any((f) => row.cellOf(f) != null && row.cellOf(f)!.value.trim().isNotEmpty);
@@ -347,6 +399,52 @@ class ImportSessionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ---------------- استيراد الجرد (Excel/CSV) ----------------
+
+  /// استيراد كشف جرد (القسم O) — صنف + فرع + كمية فعلية إلزاميون. الفرق مع
+  /// الرصيد النظامي يُحسَب وقت الحفظ فعليًا (recordCountBatch)، وليس هنا —
+  /// هذه الدالة تحلّل وتتحقق فقط، بلا أي حساب فروقات (نفس مبدأ فصل
+  /// Pipeline عن Commit في باقي أنواع الاستيراد).
+  Future<void> importCountExcelOrCsv(
+    Uint8List bytes,
+    String name,
+    List<Product> existingProducts,
+  ) async {
+    reset();
+    _retry = () => importCountExcelOrCsv(bytes, name, existingProducts);
+    targetKind = ImportTargetKind.count;
+    sourceType = name.toLowerCase().endsWith('.csv') ? ImportSourceType.csv : ImportSourceType.excel;
+    fileName = name;
+    step = ImportStep.processing;
+    notifyListeners();
+
+    final result = await _excelService.importFromBytes(bytes, name);
+    if (!result.success) {
+      _fail(result.error ?? 'فشل استيراد الملف.');
+      return;
+    }
+
+    _rawTable = result.rawTable;
+    _headerRowIndex = result.headerRowIndex;
+    columnMappings = result.columnMappings;
+    rows = result.rows;
+    matchAgainstCatalog(existingProducts);
+
+    for (final row in rows) {
+      final branchCell = row.cellOf(FieldType.branch);
+      if (branchCell == null || branchCell.value.trim().isEmpty) {
+        row.validationIssues.add('لم يُحدَّد الفرع — الجرد يتطلب فرعًا صريحًا، بلا افتراض تلقائي.');
+      }
+      final qty = row.cellOf(FieldType.quantity);
+      if (qty == null || double.tryParse(qty.value.trim().replaceAll(',', '')) == null) {
+        row.validationIssues.add('الكمية الفعلية غير موجودة أو غير رقمية.');
+      }
+    }
+
+    step = result.needsManualMapping ? ImportStep.columnMapping : ImportStep.review;
+    notifyListeners();
+  }
+
   // ---------------- استيراد موجَّه (Share Sheet / Open With) ----------------
 
   final ImportRouter _router = const ImportRouter();
@@ -393,6 +491,32 @@ class ImportSessionProvider extends ChangeNotifier {
 
   void removeRow(String rowId) {
     rows.removeWhere((r) => r.id == rowId);
+    notifyListeners();
+  }
+
+  /// عدد الصفوف التي ما زال عليها ملاحظة "لم يُحدَّد الفرع" (أهداف/وارد/جرد
+  /// الثلاثة تستخدم نفس المقطع الحرفي عمدًا لتسهيل هذا الفحص من مكان واحد).
+  int get rowsMissingBranchCount =>
+      rows.where((r) => r.validationIssues.any((m) => m.contains('لم يُحدَّد الفرع'))).length;
+
+  /// حل تفاعلي لفرع ناقص (القسم Z) بدل الاستبعاد الصامت وقت الحفظ فقط:
+  /// يطبّق فرعًا واحدًا على كل الصفوف التي لم يُحدَّد لها فرع بعد، ثم يُزيل
+  /// ملاحظة "لم يُحدَّد الفرع" فقط عن كل صف (لا يمسّ أي ملاحظة تحقّق أخرى
+  /// غير متعلقة بالفرع قد تكون موجودة على نفس الصف).
+  void applyBranchToRowsMissingBranch(String branchName) {
+    final trimmed = branchName.trim();
+    if (trimmed.isEmpty) return;
+    for (final row in rows) {
+      final hadMissingBranchIssue = row.validationIssues.any((m) => m.contains('لم يُحدَّد الفرع'));
+      if (!hadMissingBranchIssue) continue;
+      final existing = row.cellOf(FieldType.branch);
+      if (existing != null) {
+        existing.value = trimmed;
+      } else {
+        row.cells.add(ExtractedCell(fieldType: FieldType.branch, value: trimmed, confidence: 1.0));
+      }
+      row.validationIssues.removeWhere((m) => m.contains('لم يُحدَّد الفرع'));
+    }
     notifyListeners();
   }
 

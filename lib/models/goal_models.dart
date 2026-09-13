@@ -12,6 +12,12 @@ class MonthlyGoal {
   double goal1;
   double goal2;
   double goal3;
+  /// عمولة اختيارية لكل مستوى هدف (القسم H) — حقول عرض/تخزين بحتة فقط.
+  /// null يعني "غير مُعطاة"، وليست صفرًا حقيقيًا. ⚠️ لا تُستخدَم إطلاقًا في
+  /// أي حساب مخزون أو تقدّم هدف — [GoalProgress] بالأسفل لا يُشير لها.
+  double? commission1;
+  double? commission2;
+  double? commission3;
   DateTime createdAt;
   DateTime updatedAt;
 
@@ -24,6 +30,9 @@ class MonthlyGoal {
     this.goal1 = 0,
     this.goal2 = 0,
     this.goal3 = 0,
+    this.commission1,
+    this.commission2,
+    this.commission3,
     DateTime? createdAt,
     DateTime? updatedAt,
   })  : id = id ?? _uuid.v4(),
@@ -39,6 +48,9 @@ class MonthlyGoal {
         'goal1': goal1,
         'goal2': goal2,
         'goal3': goal3,
+        'commission1': commission1,
+        'commission2': commission2,
+        'commission3': commission3,
         'createdAt': createdAt.toIso8601String(),
         'updatedAt': updatedAt.toIso8601String(),
       };
@@ -52,6 +64,9 @@ class MonthlyGoal {
         goal1: (map['goal1'] as num?)?.toDouble() ?? 0,
         goal2: (map['goal2'] as num?)?.toDouble() ?? 0,
         goal3: (map['goal3'] as num?)?.toDouble() ?? 0,
+        commission1: (map['commission1'] as num?)?.toDouble(),
+        commission2: (map['commission2'] as num?)?.toDouble(),
+        commission3: (map['commission3'] as num?)?.toDouble(),
         createdAt: DateTime.tryParse(map['createdAt'] as String? ?? '') ?? DateTime.now(),
         updatedAt: DateTime.tryParse(map['updatedAt'] as String? ?? '') ?? DateTime.now(),
       );

@@ -1,9 +1,15 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/inventory_models.dart';
+import '../providers/import_session_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../widgets/common_widgets.dart';
+import 'barcode_scanner_screen.dart';
+import 'column_mapping_screen.dart';
+import 'data_review_screen.dart';
+import 'product_edit_screen.dart';
 
 /// تسجيل الوارد (القسم 32: "وارد جديد → اختيار الفرع → إضافة الأصناف → حفظ").
 class IncomingScreen extends StatefulWidget {
@@ -31,14 +37,38 @@ class _IncomingScreenState extends State<IncomingScreen> {
     super.dispose();
   }
 
-  Future<void> _addItem(BuildContext context) async {
+  /// مسح Barcode أثناء تسجيل الوارد (القسم V): وُجد → يفتح نموذج "إضافة صنف"
+  /// نفسه بالصنف مُختارًا سلفًا (يبقى المستخدم يؤكد الكمية فقط). لم يوجد →
+  /// عرض واضح + خيار إنشاء صنف جديد بالباركود مُعبَّأً.
+  Future<void> _scanBarcode(BuildContext context) async {
+    final provider = context.read<InventoryProvider>();
+    final code = await Navigator.of(context)
+        .push<String>(MaterialPageRoute(builder: (_) => const BarcodeScannerScreen()));
+    if (code == null || !context.mounted) return;
+    final product = provider.findProductByBarcode(code);
+    if (product != null) {
+      await _addItem(context, initialProductId: product.id);
+      return;
+    }
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('لا يوجد صنف بـ Barcode: $code'),
+      action: SnackBarAction(
+        label: 'إضافة صنف جديد',
+        onPressed: () => Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => ProductEditScreen(prefilledBarcode: code))),
+      ),
+    ));
+  }
+
+  Future<void> _addItem(BuildContext context, {String? initialProductId}) async {
     final provider = context.read<InventoryProvider>();
     if (provider.products.isEmpty) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('أضف صنفًا واحدًا على الأقل أولًا.')));
       return;
     }
-    String productId = provider.products.first.id;
+    String productId = initialProductId ?? provider.products.first.id;
     final qtyController = TextEditingController(text: '1');
 
     final result = await showDialog<bool>(
@@ -110,6 +140,37 @@ class _IncomingScreenState extends State<IncomingScreen> {
     });
   }
 
+  Future<void> _importFromFile(BuildContext context) async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['xlsx', 'xls', 'csv'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty || !context.mounted) return;
+    final file = result.files.first;
+    if (file.bytes == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تعذّرت قراءة الملف المختار.')));
+      return;
+    }
+
+    final session = context.read<ImportSessionProvider>();
+    final inv = context.read<InventoryProvider>();
+    await session.importIncomingExcelOrCsv(file.bytes!, file.name, inv.products);
+    if (!context.mounted) return;
+
+    switch (session.step) {
+      case ImportStep.columnMapping:
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ColumnMappingScreen()));
+      case ImportStep.review:
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DataReviewScreen()));
+      case ImportStep.error:
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(session.errorMessage ?? 'تعذّر الاستيراد.')));
+      case ImportStep.idle:
+      case ImportStep.processing:
+        break;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<InventoryProvider>();
@@ -123,7 +184,16 @@ class _IncomingScreenState extends State<IncomingScreen> {
     _branchId ??= provider.branches.first.id;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('تسجيل وارد')),
+      appBar: AppBar(
+        title: const Text('تسجيل وارد'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.file_upload_outlined),
+            tooltip: 'استيراد من ملف',
+            onPressed: () => _importFromFile(context),
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -142,6 +212,11 @@ class _IncomingScreenState extends State<IncomingScreen> {
           Row(
             children: [
               const Expanded(child: Text('الأصناف', style: TextStyle(fontWeight: FontWeight.bold))),
+              IconButton(
+                icon: const Icon(Icons.qr_code_scanner_outlined),
+                tooltip: 'مسح Barcode',
+                onPressed: () => _scanBarcode(context),
+              ),
               TextButton.icon(
                 onPressed: () => _addItem(context),
                 icon: const Icon(Icons.add),

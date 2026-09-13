@@ -5,6 +5,7 @@ import '../models/catalog_models.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/settings_provider.dart';
 import '../widgets/common_widgets.dart';
+import 'barcode_scanner_screen.dart';
 
 /// إضافة/تعديل صنف (القسم 4) — كل الحقول المطلوبة، بلا أي حقل مالي، مع تحقق
 /// من تكرار Barcode/رقم الصنف قبل الحفظ.
@@ -102,6 +103,16 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     if (context.mounted) Navigator.of(context).pop();
   }
 
+  /// مسح Barcode لتعبئة الحقل هنا مباشرة (القسم V) — سواء عند إضافة صنف
+  /// جديد يدويًا أو تعديل صنف قائم لتصحيح/إضافة باركوده. لا تحقّق تكرار هنا؛
+  /// ذلك يبقى في _save كما هو (رسالة أوضح مع اسم الصنف الآخر عند الحفظ).
+  Future<void> _scanBarcode(BuildContext context) async {
+    final code = await Navigator.of(context)
+        .push<String>(MaterialPageRoute(builder: (_) => const BarcodeScannerScreen()));
+    if (code == null) return;
+    setState(() => _barcode.text = code);
+  }
+
   Future<void> _delete(BuildContext context) async {
     final provider = context.read<InventoryProvider>();
     final existing = widget.existing;
@@ -151,7 +162,14 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
               Expanded(
                 child: TextField(
                   controller: _barcode,
-                  decoration: const InputDecoration(labelText: 'Barcode'),
+                  decoration: InputDecoration(
+                    labelText: 'Barcode',
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.qr_code_scanner_outlined),
+                      tooltip: 'مسح Barcode',
+                      onPressed: () => _scanBarcode(context),
+                    ),
+                  ),
                   keyboardType: TextInputType.number,
                 ),
               ),

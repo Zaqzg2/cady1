@@ -1,10 +1,16 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../models/catalog_models.dart';
+import '../providers/import_session_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../widgets/common_widgets.dart';
+import 'barcode_scanner_screen.dart';
+import 'column_mapping_screen.dart';
+import 'data_review_screen.dart';
+import 'product_edit_screen.dart';
 
 final _numberFormat = NumberFormat('#,##0.##', 'en_US');
 
@@ -33,6 +39,37 @@ class _CountScreenState extends State<CountScreen> with SingleTickerProviderStat
     super.dispose();
   }
 
+  Future<void> _importFromFile(BuildContext context) async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['xlsx', 'xls', 'csv'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty || !context.mounted) return;
+    final file = result.files.first;
+    if (file.bytes == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تعذّرت قراءة الملف المختار.')));
+      return;
+    }
+
+    final session = context.read<ImportSessionProvider>();
+    final inv = context.read<InventoryProvider>();
+    await session.importCountExcelOrCsv(file.bytes!, file.name, inv.products);
+    if (!context.mounted) return;
+
+    switch (session.step) {
+      case ImportStep.columnMapping:
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ColumnMappingScreen()));
+      case ImportStep.review:
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DataReviewScreen()));
+      case ImportStep.error:
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(session.errorMessage ?? 'تعذّر الاستيراد.')));
+      case ImportStep.idle:
+      case ImportStep.processing:
+        break;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<InventoryProvider>();
@@ -47,6 +84,13 @@ class _CountScreenState extends State<CountScreen> with SingleTickerProviderStat
     return Scaffold(
       appBar: AppBar(
         title: const Text('الجرد'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.file_upload_outlined),
+            tooltip: 'استيراد جرد من ملف',
+            onPressed: () => _importFromFile(context),
+          ),
+        ],
         bottom: TabBar(
           controller: _tabController,
           tabs: const [Tab(text: 'الجرد اليدوي'), Tab(text: 'الجرد السريع')],
@@ -99,6 +143,29 @@ class _ManualCountTabState extends State<_ManualCountTab> {
     super.dispose();
   }
 
+  /// مسح Barcode أثناء الجرد (القسم V): وُجد → يُفتح للجرد مباشرة، كأنه اختير
+  /// من نتائج البحث. لم يوجد → عرض واضح لا صمت + خيار إنشاء صنف جديد بالباركود
+  /// مُعبَّأً تلقائيًا (نفس السلوك الموحَّد عبر InventoryProvider.findProductByBarcode).
+  Future<void> _scanBarcode(BuildContext context) async {
+    final code = await Navigator.of(context)
+        .push<String>(MaterialPageRoute(builder: (_) => const BarcodeScannerScreen()));
+    if (code == null || !context.mounted) return;
+    final product = context.read<InventoryProvider>().findProductByBarcode(code);
+    if (product != null) {
+      _selectProduct(product);
+      return;
+    }
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('لا يوجد صنف بـ Barcode: $code'),
+      action: SnackBarAction(
+        label: 'إضافة صنف جديد',
+        onPressed: () => Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => ProductEditScreen(prefilledBarcode: code))),
+      ),
+    ));
+  }
+
   void _selectProduct(Product product) {
     final provider = context.read<InventoryProvider>();
     final system = provider.currentBalance(product.id, widget.branchId);
@@ -144,12 +211,13 @@ class _ManualCountTabState extends State<_ManualCountTab> {
             child: TextField(
               controller: _searchController,
               autofocus: false,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 hintText: 'ابحث عن صنف بالاسم أو الرقم أو Barcode...',
-                prefixIcon: Icon(Icons.search_rounded),
-                suffixIcon: Tooltip(
-                  message: 'الماسح الضوئي غير متاح في هذا الإصدار — استخدم البحث اليدوي',
-                  child: Icon(Icons.qr_code_scanner_outlined, color: Colors.grey),
+                prefixIcon: const Icon(Icons.search_rounded),
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.qr_code_scanner_outlined),
+                  tooltip: 'مسح Barcode',
+                  onPressed: () => _scanBarcode(context),
                 ),
               ),
               onChanged: (v) => setState(() => _query = v),

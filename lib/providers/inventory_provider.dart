@@ -336,10 +336,14 @@ class InventoryProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// أفضل صنف مطابق ضبابيًا لاسم مستخرَج — تُستخدم في شاشتي المراجعة/الاستيراد
-  ProductMatch? bestProductMatch(String extractedName) {
-    final matches = _fuzzy.findBestMatches(extractedName, products, topN: 1);
-    return matches.isEmpty ? null : matches.first;
+  /// بحث عن صنف بمطابقة Barcode حرفية تامة (القسم V/W) — يُستخدَم من كل
+  /// شاشات المسح (الجرد، الوارد، طلب الشراء، تعديل/إضافة صنف) حتى يبقى
+  /// سلوك "وُجد → افتحه مباشرة، لم يوجد → أنشئ صنفًا جديدًا بالباركود
+  /// مُعبَّأً" موحّدًا في كل مكان بدل تكراره بمنطق مختلف لكل شاشة.
+  Product? findProductByBarcode(String code) {
+    final trimmed = code.trim();
+    if (trimmed.isEmpty) return null;
+    return products.where((p) => p.barcode == trimmed).firstOrNullSafe;
   }
 
   // ---------------- محرك المخزون: تسجيل الحركات (القسم 7) ----------------
@@ -857,6 +861,12 @@ class InventoryProvider extends ChangeNotifier {
         skipped.add('$displayName — لا توجد أي قيمة هدف صالحة (1 أو 2 أو 3)');
         continue;
       }
+      // عمولة اختيارية (القسم H) — تُقرأ من الملف إن وُجدت بصرف النظر عن
+      // إعداد goalCommissionEnabled (ذلك الإعداد يتحكّم بإظهار الحقل في
+      // النموذج اليدوي فقط)؛ تبقى دومًا حقل تخزين بحت لا يمس أي حساب.
+      final c1 = parseGoal(FieldType.commission1);
+      final c2 = parseGoal(FieldType.commission2);
+      final c3 = parseGoal(FieldType.commission3);
 
       final existing = goals.where((g) =>
           g.productId == product.id && g.branchId == branch.id && g.year == year && g.month == month);
@@ -867,6 +877,9 @@ class InventoryProvider extends ChangeNotifier {
         if (g1 != null) alreadyProcessed.goal1 = g1;
         if (g2 != null) alreadyProcessed.goal2 = g2;
         if (g3 != null) alreadyProcessed.goal3 = g3;
+        if (c1 != null) alreadyProcessed.commission1 = c1;
+        if (c2 != null) alreadyProcessed.commission2 = c2;
+        if (c3 != null) alreadyProcessed.commission3 = c3;
         await saveGoal(alreadyProcessed);
         updated++;
       } else if (existing.isNotEmpty) {
@@ -874,6 +887,9 @@ class InventoryProvider extends ChangeNotifier {
         if (g1 != null) g.goal1 = g1;
         if (g2 != null) g.goal2 = g2;
         if (g3 != null) g.goal3 = g3;
+        if (c1 != null) g.commission1 = c1;
+        if (c2 != null) g.commission2 = c2;
+        if (c3 != null) g.commission3 = c3;
         await saveGoal(g);
         processedThisRun[key] = g;
         updated++;
@@ -886,6 +902,9 @@ class InventoryProvider extends ChangeNotifier {
           goal1: g1 ?? 0,
           goal2: g2 ?? 0,
           goal3: g3 ?? 0,
+          commission1: c1,
+          commission2: c2,
+          commission3: c3,
         );
         await saveGoal(created);
         processedThisRun[key] = created;
@@ -915,6 +934,138 @@ class InventoryProvider extends ChangeNotifier {
     if (normalized.isEmpty) return true;
     const keywords = ['الإجمالي', 'إجمالي', 'المجموع', 'grand total', 'total'];
     return keywords.any((kw) => normalized.contains(kw));
+  }
+
+  /// استيراد الوارد (القسم P) — غلاف رفيع فوق recordMovements الموجودة
+  /// أصلًا (نفس الدالة التي تستخدمها شاشة "تسجيل وارد" اليدوية)، فلا منطق
+  /// حركة مخزون مكرر بين المسارين (القسم ٢٨).
+  Future<GoalImportSummary> commitIncomingRows({
+    required List<ExtractedRow> rows,
+    required String fileName,
+  }) async {
+    await ensureDefaultBranch();
+    final movements = <StockMovement>[];
+    final skipped = <String>[];
+
+    for (final row in rows) {
+      if (row.status != RowReviewStatus.accepted) continue;
+      final nameCell = row.cellOf(FieldType.productName);
+      final displayName = nameCell?.value.trim() ?? '(بلا اسم)';
+
+      final branchCell = row.cellOf(FieldType.branch);
+      if (branchCell == null || branchCell.value.trim().isEmpty) {
+        skipped.add('$displayName — لم يُحدَّد الفرع');
+        continue;
+      }
+      final qty = double.tryParse((row.cellOf(FieldType.quantity)?.value ?? '').trim().replaceAll(',', ''));
+      if (qty == null) {
+        skipped.add('$displayName — كمية غير صالحة');
+        continue;
+      }
+      if (nameCell == null || nameCell.value.trim().isEmpty) {
+        skipped.add('(بلا اسم) — لا يوجد اسم صنف');
+        continue;
+      }
+
+      final branch = await getOrCreateBranch(branchCell.value);
+      // بخلاف الأهداف: صنف جديد فعليًا سيناريو طبيعي شائع في الوارد، فنسمح
+      // بإنشائه (نفس _resolveProduct المستخدَمة في استيراد المخزون العادي).
+      final product = await _resolveProduct(row, nameCell.value);
+
+      final supplier = row.cellOf(FieldType.supplier)?.value.trim();
+      final docNumber = row.cellOf(FieldType.documentNumber)?.value.trim();
+      final noteParts = [
+        if (docNumber != null && docNumber.isNotEmpty) 'مستند: $docNumber',
+        if (supplier != null && supplier.isNotEmpty) 'مورد: $supplier',
+        'استيراد: $fileName',
+      ];
+
+      movements.add(StockMovement.incoming(
+        productId: product.id,
+        branchId: branch.id,
+        quantity: qty,
+        note: noteParts.join(' — '),
+      ));
+    }
+
+    if (movements.isNotEmpty) await recordMovements(movements);
+
+    await _repo.saveImportRecord(ImportRecord(
+      sourceType: ImportSourceType.excel,
+      fileName: fileName,
+      rawRowCount: rows.length,
+      acceptedRowCount: movements.length,
+    ));
+    await load();
+
+    return GoalImportSummary(
+      totalRows: rows.length,
+      importedRows: movements.length,
+      updatedRows: 0,
+      skippedRows: skipped.length,
+      skipReasons: skipped,
+    );
+  }
+
+  /// استيراد الجرد (القسم O) — غلاف رفيع فوق recordCountBatch الموجودة
+  /// أصلًا (نفس الدالة التي تستخدمها شاشة الجرد اليدوي)، فهي من يحسب الفرق
+  /// مع الرصيد النظامي فعليًا، لا هذه الدالة (لا منطق حساب مكرر — القسم ٢٨).
+  Future<GoalImportSummary> commitCountRows({
+    required List<ExtractedRow> rows,
+    required String fileName,
+  }) async {
+    await ensureDefaultBranch();
+    final entries = <({String productId, String branchId, double actualQuantity, String? note})>[];
+    final skipped = <String>[];
+
+    for (final row in rows) {
+      if (row.status != RowReviewStatus.accepted) continue;
+      final nameCell = row.cellOf(FieldType.productName);
+      final displayName = nameCell?.value.trim() ?? '(بلا اسم)';
+
+      final branchCell = row.cellOf(FieldType.branch);
+      if (branchCell == null || branchCell.value.trim().isEmpty) {
+        skipped.add('$displayName — لم يُحدَّد الفرع');
+        continue;
+      }
+      final actual = double.tryParse((row.cellOf(FieldType.quantity)?.value ?? '').trim().replaceAll(',', ''));
+      if (actual == null) {
+        skipped.add('$displayName — كمية فعلية غير صالحة');
+        continue;
+      }
+      if (nameCell == null || nameCell.value.trim().isEmpty) {
+        skipped.add('(بلا اسم) — لا يوجد اسم صنف');
+        continue;
+      }
+      if (row.matchedProductId == null && !row.forceNewProduct) {
+        // الجرد يُفترَض أن يكون لأصناف موجودة أصلًا — لا نُنشئ صنفًا جديدًا
+        // ضمنيًا هنا كما في الوارد، لتفادي "جرد" أصناف لم تُعرَّف بعد.
+        skipped.add('$displayName — لم تُؤكَّد مطابقته بصنف موجود (اعتمد الاقتراح أو اربطه يدويًا)');
+        continue;
+      }
+
+      final branch = await getOrCreateBranch(branchCell.value);
+      final product = await _resolveProduct(row, nameCell.value);
+      entries.add((productId: product.id, branchId: branch.id, actualQuantity: actual, note: 'استيراد: $fileName'));
+    }
+
+    if (entries.isNotEmpty) await recordCountBatch(entries);
+
+    await _repo.saveImportRecord(ImportRecord(
+      sourceType: ImportSourceType.excel,
+      fileName: fileName,
+      rawRowCount: rows.length,
+      acceptedRowCount: entries.length,
+    ));
+    await load();
+
+    return GoalImportSummary(
+      totalRows: rows.length,
+      importedRows: entries.length,
+      updatedRows: 0,
+      skippedRows: skipped.length,
+      skipReasons: skipped,
+    );
   }
 
   Future<Product> _resolveProduct(ExtractedRow row, String extractedName) async {

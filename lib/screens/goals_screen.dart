@@ -1,11 +1,17 @@
+import 'dart:typed_data';
+
+import 'package:cross_file/cross_file.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 
+import '../models/catalog_models.dart';
 import '../models/goal_models.dart';
 import '../providers/import_session_provider.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/settings_provider.dart';
+import '../services/goal_template_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
 import 'column_mapping_screen.dart';
@@ -16,6 +22,31 @@ const _arabicMonths = [
   'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
   'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر',
 ];
+
+/// يبحث عن هدف موجود بنفس الهوية المركّبة (صنف×فرع×سنة×شهر — القسم G) ليُحدَّث
+/// بدل إنشاء سجل مكرر لنفس الصنف/الفرع/الشهر، ثم يحفظ. يُستخدَم من مسار
+/// "إضافة جديد" في النموذج اليدوي ومن الإدخال الجماعي كليهما (وليس من مسار
+/// "تعديل" — ذاك يملك بالفعل الهدف الصحيح بهويته الحالية فلا داعي لبحث ثانٍ).
+Future<void> _upsertGoal(
+  InventoryProvider provider, {
+  required String productId,
+  required String branchId,
+  required int year,
+  required int month,
+  double? goal1,
+  double? goal2,
+  double? goal3,
+}) async {
+  final existing = provider.goals.where((g) =>
+      g.productId == productId && g.branchId == branchId && g.year == year && g.month == month);
+  final goal = existing.isNotEmpty
+      ? existing.first
+      : MonthlyGoal(productId: productId, branchId: branchId, year: year, month: month);
+  if (goal1 != null) goal.goal1 = goal1;
+  if (goal2 != null) goal.goal2 = goal2;
+  if (goal3 != null) goal.goal3 = goal3;
+  await provider.saveGoal(goal);
+}
 
 /// الأهداف الشهرية (القسم 10-12): تبويب لإدارة الأهداف نفسها، وتبويب "لوحة
 /// الأهداف" لمتابعة نسب التحقق العامة ومقارنة الفروع.
@@ -35,7 +66,13 @@ class _GoalsScreenState extends State<GoalsScreen> with SingleTickerProviderStat
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
+    // بلا هذا الرصد، لا تُعاد بناء الشاشة (وبالتالي زر/أزرار الإضافة
+    // العائمة) عند التنقل بين التبويبات بالسحب/الضغط مباشرة — فقط عند
+    // إعادة بناء لسبب آخر (كتغيير السنة/الشهر). ضروري هنا تحديدًا لأن تبويب
+    // الإدخال الجماعي الجديد يحتاج إخفاء أزرار الإضافة/الاستيراد/القالب
+    // العائمة فور الوصول إليه (له مسار حفظ داخلي خاص به).
+    _tabController.addListener(() => setState(() {}));
     final now = DateTime.now();
     _year = now.year;
     _month = now.month;
@@ -45,6 +82,15 @@ class _GoalsScreenState extends State<GoalsScreen> with SingleTickerProviderStat
   void dispose() {
     _tabController.dispose();
     super.dispose();
+  }
+
+  /// تنزيل قالب Excel رسمي للأهداف (القسم L) عبر نفس آلية المشاركة
+  /// المستخدَمة أصلًا في مركز التقارير — لا حاجة لمنطق حفظ/مشاركة جديد.
+  Future<void> _downloadTemplate(BuildContext context) async {
+    final Uint8List bytes = GoalTemplateService().buildEmptyTemplate();
+    await SharePlus.instance.share(
+      ShareParams(files: [XFile.fromData(bytes, name: 'قالب_الأهداف.xlsx')], text: 'قالب استيراد الأهداف'),
+    );
   }
 
   Future<void> _importGoals(BuildContext context) async {
@@ -84,6 +130,7 @@ class _GoalsScreenState extends State<GoalsScreen> with SingleTickerProviderStat
 
   Future<void> _openForm(BuildContext context, {MonthlyGoal? existing}) async {
     final provider = context.read<InventoryProvider>();
+    final commissionEnabled = context.read<SettingsProvider>().goalCommissionEnabled;
     if (provider.products.isEmpty || provider.branches.isEmpty) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('أضف صنفًا وفرعًا واحدًا على الأقل أولًا.')));
@@ -97,6 +144,9 @@ class _GoalsScreenState extends State<GoalsScreen> with SingleTickerProviderStat
     final g1 = TextEditingController(text: (existing?.goal1 ?? 0).toStringAsFixed(0));
     final g2 = TextEditingController(text: (existing?.goal2 ?? 0).toStringAsFixed(0));
     final g3 = TextEditingController(text: (existing?.goal3 ?? 0).toStringAsFixed(0));
+    final c1 = TextEditingController(text: existing?.commission1?.toStringAsFixed(0) ?? '');
+    final c2 = TextEditingController(text: existing?.commission2?.toStringAsFixed(0) ?? '');
+    final c3 = TextEditingController(text: existing?.commission3?.toStringAsFixed(0) ?? '');
 
     final saved = await showModalBottomSheet<bool>(
       context: context,
@@ -177,6 +227,25 @@ class _GoalsScreenState extends State<GoalsScreen> with SingleTickerProviderStat
                     controller: g3,
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(labelText: 'الهدف الثالث')),
+                if (commissionEnabled) ...[
+                  const SizedBox(height: 16),
+                  const Text('العمولة (اختياري)', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                  const SizedBox(height: 8),
+                  TextField(
+                      controller: c1,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'عمولة الهدف الأول')),
+                  const SizedBox(height: 10),
+                  TextField(
+                      controller: c2,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'عمولة الهدف الثاني')),
+                  const SizedBox(height: 10),
+                  TextField(
+                      controller: c3,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'عمولة الهدف الثالث')),
+                ],
                 const SizedBox(height: 16),
                 FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('حفظ')),
               ],
@@ -187,16 +256,32 @@ class _GoalsScreenState extends State<GoalsScreen> with SingleTickerProviderStat
     );
 
     if (saved != true) return;
-    final goal = existing ??
-        MonthlyGoal(year: year, month: month, branchId: branchId, productId: productId);
-    goal.year = year;
-    goal.month = month;
-    goal.branchId = branchId;
-    goal.productId = productId;
-    goal.goal1 = double.tryParse(g1.text) ?? 0;
-    goal.goal2 = double.tryParse(g2.text) ?? 0;
-    goal.goal3 = double.tryParse(g3.text) ?? 0;
-    await provider.saveGoal(goal);
+    if (existing != null) {
+      existing.year = year;
+      existing.month = month;
+      existing.branchId = branchId;
+      existing.productId = productId;
+      existing.goal1 = double.tryParse(g1.text) ?? 0;
+      existing.goal2 = double.tryParse(g2.text) ?? 0;
+      existing.goal3 = double.tryParse(g3.text) ?? 0;
+      if (commissionEnabled) {
+        existing.commission1 = double.tryParse(c1.text);
+        existing.commission2 = double.tryParse(c2.text);
+        existing.commission3 = double.tryParse(c3.text);
+      }
+      await provider.saveGoal(existing);
+    } else {
+      await _upsertGoal(
+        provider,
+        productId: productId,
+        branchId: branchId,
+        year: year,
+        month: month,
+        goal1: double.tryParse(g1.text) ?? 0,
+        goal2: double.tryParse(g2.text) ?? 0,
+        goal3: double.tryParse(g3.text) ?? 0,
+      );
+    }
   }
 
   @override
@@ -206,7 +291,7 @@ class _GoalsScreenState extends State<GoalsScreen> with SingleTickerProviderStat
         title: const Text('الأهداف الشهرية'),
         bottom: TabBar(
           controller: _tabController,
-          tabs: const [Tab(text: 'الأهداف'), Tab(text: 'لوحة الأهداف')],
+          tabs: const [Tab(text: 'الأهداف'), Tab(text: 'إدخال جماعي'), Tab(text: 'لوحة الأهداف')],
         ),
       ),
       body: TabBarView(
@@ -221,6 +306,7 @@ class _GoalsScreenState extends State<GoalsScreen> with SingleTickerProviderStat
             onBranchChanged: (v) => setState(() => _branchId = v),
             onEdit: (g) => _openForm(context, existing: g),
           ),
+          _GoalsBulkEntryTab(year: _year, month: _month, branchId: _branchId),
           const _GoalsDashboardTab(),
         ],
       ),
@@ -228,6 +314,13 @@ class _GoalsScreenState extends State<GoalsScreen> with SingleTickerProviderStat
           ? Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                FloatingActionButton.small(
+                  heroTag: 'goals_template_fab',
+                  onPressed: () => _downloadTemplate(context),
+                  tooltip: 'قالب Excel',
+                  child: const Icon(Icons.description_outlined),
+                ),
+                const SizedBox(height: 10),
                 FloatingActionButton.small(
                   heroTag: 'goals_import_fab',
                   onPressed: () => _importGoals(context),
@@ -389,6 +482,166 @@ class _GoalsListTab extends StatelessWidget {
                 ),
         ),
       ],
+    );
+  }
+}
+
+/// إدخال الأهداف بالجملة (القسم K): بحث عن صنف ← هدف 1/2/3 ← حفظ، بتمرير
+/// سريع لصنف بعد آخر بلا فتح/إغلاق نموذج (BottomSheet) منفصل لكل صنف كما في
+/// النموذج اليدوي العادي. يستخدم سنة/شهر/فرع المختارة بتبويب "الأهداف" نفسه
+/// (تُمرَّر من الشاشة الأم) حتى لا يُعاد اختيارها لكل صنف على حدة.
+class _GoalsBulkEntryTab extends StatefulWidget {
+  final int year;
+  final int month;
+  final String? branchId;
+  const _GoalsBulkEntryTab({required this.year, required this.month, required this.branchId});
+
+  @override
+  State<_GoalsBulkEntryTab> createState() => _GoalsBulkEntryTabState();
+}
+
+class _GoalsBulkEntryTabState extends State<_GoalsBulkEntryTab> {
+  final _searchController = TextEditingController();
+  final _g1 = TextEditingController();
+  final _g2 = TextEditingController();
+  final _g3 = TextEditingController();
+  Product? _selected;
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _g1.dispose();
+    _g2.dispose();
+    _g3.dispose();
+    super.dispose();
+  }
+
+  void _pick(Product p) {
+    setState(() {
+      _selected = p;
+      _query = '';
+      _searchController.clear();
+    });
+  }
+
+  Future<void> _save(BuildContext context) async {
+    final branchId = widget.branchId;
+    final selected = _selected;
+    if (selected == null || branchId == null) return;
+    await _upsertGoal(
+      context.read<InventoryProvider>(),
+      productId: selected.id,
+      branchId: branchId,
+      year: widget.year,
+      month: widget.month,
+      goal1: double.tryParse(_g1.text) ?? 0,
+      goal2: double.tryParse(_g2.text) ?? 0,
+      goal3: double.tryParse(_g3.text) ?? 0,
+    );
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('حُفظ هدف ${selected.name}.')));
+    setState(() {
+      _selected = null;
+      _g1.clear();
+      _g2.clear();
+      _g3.clear();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = context.watch<InventoryProvider>();
+    final branchId = widget.branchId;
+    final branch = branchId == null ? null : provider.branchById(branchId);
+    final results = _query.trim().isEmpty ? const <Product>[] : provider.searchProducts(_query);
+    final selected = _selected;
+
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            branch == null
+                ? '⚠️ اختر فرعًا محدَّدًا من تبويب "الأهداف" (وليس "كل الفروع") لتفعيل الإدخال الجماعي.'
+                : '${_arabicMonths[widget.month - 1]} ${widget.year} — ${branch.name}',
+            style: TextStyle(fontSize: 12.5, color: branch == null ? Colors.orange.shade800 : Colors.grey),
+          ),
+          const SizedBox(height: 10),
+          if (selected == null) ...[
+            TextField(
+              controller: _searchController,
+              enabled: branch != null,
+              decoration: const InputDecoration(
+                hintText: 'ابحث عن صنف بالاسم أو الرقم أو Barcode...',
+                prefixIcon: Icon(Icons.search_rounded),
+              ),
+              onChanged: (v) => setState(() => _query = v),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: results.isEmpty
+                  ? Center(
+                      child: Text(
+                        _query.trim().isEmpty ? 'ابدأ الكتابة للبحث عن صنف' : 'لا نتائج',
+                        style: const TextStyle(color: Colors.grey),
+                      ),
+                    )
+                  : ListView.builder(
+                      itemCount: results.length,
+                      itemBuilder: (context, i) {
+                        final p = results[i];
+                        final hasBarcode = (p.barcode ?? '').isNotEmpty;
+                        return ListTile(
+                          title: Text(p.name),
+                          subtitle: hasBarcode ? Text(p.barcode!) : null,
+                          onTap: () => _pick(p),
+                        );
+                      },
+                    ),
+            ),
+          ] else ...[
+            Card(
+              child: ListTile(
+                title: Text(selected.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                trailing: IconButton(
+                  icon: const Icon(Icons.close),
+                  tooltip: 'تغيير الصنف',
+                  onPressed: () => setState(() => _selected = null),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _g1,
+              keyboardType: TextInputType.number,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: 'الهدف الأول'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _g2,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'الهدف الثاني'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _g3,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'الهدف الثالث'),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: () => _save(context),
+                child: const Text('حفظ والانتقال للصنف التالي'),
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

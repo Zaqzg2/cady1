@@ -260,6 +260,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                       ],
                     ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text('حقول العمولة بالأهداف (القسم H — لا تدخل أي حساب مخزون)'),
+                        ),
+                        Switch(
+                          value: settings.goalCommissionEnabled,
+                          onChanged: (v) => context.read<SettingsProvider>().setGoalCommissionEnabled(v),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),

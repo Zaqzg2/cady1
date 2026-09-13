@@ -31,6 +31,7 @@ class SettingsProvider extends ChangeNotifier {
   static const _kDefaultBranchId = 'default_branch_id';
   static const _kDefaultCategoryId = 'default_category_id';
   static const _kLastBackupAt = 'last_backup_at';
+  static const _kGoalCommissionEnabled = 'goal_commission_enabled';
 
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
   final Repository _repo = Repository();
@@ -56,6 +57,10 @@ class SettingsProvider extends ChangeNotifier {
   String? defaultBranchId;
   String? defaultCategoryId;
   DateTime? lastBackupAt;
+  /// عمولة الأهداف 1/2/3 (القسم H) — اختيارية، معطّلة افتراضيًا. حقل عرض/
+  /// إدخال فقط: لا تُستخدَم إطلاقًا في أي حساب مخزون أو تقدّم هدف مهما كانت
+  /// قيمة هذا الإعداد (راجع GoalProgress في goal_models.dart — لا صلة له بها).
+  bool goalCommissionEnabled = false;
 
   bool isLoaded = false;
 
@@ -88,6 +93,7 @@ class SettingsProvider extends ChangeNotifier {
     defaultCategoryId = _repo.getSetting<String>(_kDefaultCategoryId);
     final lastBackupIso = _repo.getSetting<String>(_kLastBackupAt);
     lastBackupAt = lastBackupIso != null ? DateTime.tryParse(lastBackupIso) : null;
+    goalCommissionEnabled = _repo.getSetting<bool>(_kGoalCommissionEnabled, false) ?? false;
 
     isLoaded = true;
     notifyListeners();
@@ -207,6 +213,12 @@ class SettingsProvider extends ChangeNotifier {
   Future<void> setDefaultReportFormat(String value) async {
     defaultReportFormat = value;
     await _repo.setSetting(_kReportFormat, value);
+    notifyListeners();
+  }
+
+  Future<void> setGoalCommissionEnabled(bool value) async {
+    goalCommissionEnabled = value;
+    await _repo.setSetting(_kGoalCommissionEnabled, value);
     notifyListeners();
   }
 

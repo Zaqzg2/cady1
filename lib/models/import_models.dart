@@ -38,15 +38,23 @@ enum FieldType {
   goal1,
   goal2,
   goal3,
+  // عمولة اختيارية لكل مستوى هدف (القسم H) — تُكتشف/تُعيَّن فقط عند تفعيل
+  // الإعداد المقابل؛ لا تدخل أي حساب مخزون أو تقدّم هدف مهما كانت قيمتها.
+  commission1,
+  commission2,
+  commission3,
+  // حقول خاصة باستيراد الوارد/المشتريات (القسم P، Q).
+  supplier,
+  documentNumber,
+  requestedQuantity,
   ignore,
   unknown,
 }
 
 /// ماذا يمثّل هذا الاستيراد فعليًا؟ يحدد أي مسار Commit يُستدعى من شاشة
-/// المراجعة (InventoryProvider.commitAcceptedRows للمخزون، أو
-/// commitGoalRows للأهداف) — كلاهما يمر بنفس Pipeline (Preview → Mapping →
-/// Validation → Review) قبل ذلك تمامًا (القسم D: "كل نوع يستخدم نفس pipeline").
-enum ImportTargetKind { inventory, goals }
+/// المراجعة — كلاهما يمر بنفس Pipeline (Preview → Mapping → Validation →
+/// Review) قبل ذلك تمامًا (القسم D: "كل نوع يستخدم نفس pipeline").
+enum ImportTargetKind { inventory, goals, incoming, count }
 
 extension FieldTypeLabel on FieldType {
   String get labelAr => switch (this) {
@@ -66,6 +74,12 @@ extension FieldTypeLabel on FieldType {
         FieldType.goal1 => 'الهدف 1',
         FieldType.goal2 => 'الهدف 2',
         FieldType.goal3 => 'الهدف 3',
+        FieldType.commission1 => 'العمولة 1',
+        FieldType.commission2 => 'العمولة 2',
+        FieldType.commission3 => 'العمولة 3',
+        FieldType.supplier => 'المورد',
+        FieldType.documentNumber => 'رقم المستند',
+        FieldType.requestedQuantity => 'الكمية المطلوبة',
         FieldType.ignore => 'تجاهل',
         FieldType.unknown => 'غير معروف',
       };

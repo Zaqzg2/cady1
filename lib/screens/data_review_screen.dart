@@ -21,17 +21,31 @@ class DataReviewScreen extends StatelessWidget {
 
     final inventoryProvider = context.read<InventoryProvider>();
 
-    if (session.targetKind == ImportTargetKind.goals) {
-      final summary = await inventoryProvider.commitGoalRows(
-        rows: session.rows,
-        fileName: session.fileName,
-      );
+    if (session.targetKind == ImportTargetKind.goals ||
+        session.targetKind == ImportTargetKind.incoming ||
+        session.targetKind == ImportTargetKind.count) {
+      final GoalImportSummary summary;
+      final String noun;
+      switch (session.targetKind) {
+        case ImportTargetKind.goals:
+          summary = await inventoryProvider.commitGoalRows(rows: session.rows, fileName: session.fileName);
+          noun = 'هدفًا';
+        case ImportTargetKind.count:
+          summary = await inventoryProvider.commitCountRows(rows: session.rows, fileName: session.fileName);
+          noun = 'صنف جرد';
+        case ImportTargetKind.incoming:
+        case ImportTargetKind.inventory:
+          summary = await inventoryProvider.commitIncomingRows(rows: session.rows, fileName: session.fileName);
+          noun = 'حركة وارد';
+      }
+      final isGoals = session.targetKind == ImportTargetKind.goals;
       session.reset();
       if (!context.mounted) return;
       Navigator.of(context).popUntil((route) => route.isFirst);
       final message = summary.skippedRows == 0
-          ? 'تم حفظ ${summary.importedRows + summary.updatedRows} هدفًا (${summary.importedRows} جديد، ${summary.updatedRows} محدَّث).'
-          : 'تم الحفظ: ${summary.importedRows} جديد، ${summary.updatedRows} محدَّث، ${summary.skippedRows} متجاهَل. اضغط لعرض الأسباب.';
+          ? 'تم حفظ ${summary.importedRows + summary.updatedRows} $noun'
+              '${isGoals ? ' (${summary.importedRows} جديد، ${summary.updatedRows} محدَّث)' : ''}.'
+          : 'تم الحفظ: ${summary.importedRows + summary.updatedRows} $noun، ${summary.skippedRows} متجاهَل. اضغط لعرض الأسباب.';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(message),
         action: summary.skippedRows == 0
@@ -100,6 +114,7 @@ class DataReviewScreen extends StatelessWidget {
                 textAlign: TextAlign.center,
               ),
             ),
+          if (session.rowsMissingBranchCount > 0) const _BranchMissingBanner(),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
             child: Row(
@@ -189,6 +204,67 @@ class _OcrSourceIndicator extends StatelessWidget {
             Container(width: 6, height: 6, decoration: const BoxDecoration(color: Colors.green, shape: BoxShape.circle)),
             const SizedBox(width: 5),
             const Text('مكتمل', style: TextStyle(fontSize: 11.5, color: Colors.green, fontWeight: FontWeight.w600)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// حل تفاعلي لفرع ناقص (القسم Z) — بدل ترك المستخدم يكتشف الاستبعاد بعد
+/// الحفظ فقط، أو يبحث بنفسه عن أي صف عليه ملاحظة "لم يُحدَّد الفرع" وسط
+/// عشرات الصفوف. زر واحد يطبّق فرعًا على كل الصفوف المتأثرة دفعة واحدة؛
+/// لا نبني هنا مسارًا لإعادة تعيين عمود الفرع تلقائيًا — إن كان الملف
+/// فعليًا يحتوي عمود فرع لم يُكتشَف، الأسلم إلغاء الاستيراد وتصحيح رأس
+/// العمود في الملف نفسه بدل تخمين تعيين قد يُطبَّق على صفوف خطأ.
+class _BranchMissingBanner extends StatelessWidget {
+  const _BranchMissingBanner();
+
+  Future<void> _pickBranch(BuildContext context) async {
+    final inv = context.read<InventoryProvider>();
+    if (inv.branches.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('أضف فرعًا واحدًا على الأقل من شاشة الفروع أولًا.')));
+      return;
+    }
+    final chosen = await showDialog<Branch>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('اختيار فرع لتطبيقه على الصفوف الناقصة'),
+        children: inv.branches
+            .map((b) => SimpleDialogOption(onPressed: () => Navigator.pop(ctx, b), child: Text(b.name)))
+            .toList(),
+      ),
+    );
+    if (chosen == null || !context.mounted) return;
+    context.read<ImportSessionProvider>().applyBranchToRowsMissingBranch(chosen.name);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final session = context.watch<ImportSessionProvider>();
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: scheme.errorContainer.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.store_mall_directory_outlined, size: 18, color: scheme.onErrorContainer),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'لم يتم تحديد الفرع لـ ${session.rowsMissingBranchCount} صف.',
+                style: const TextStyle(fontSize: 12),
+              ),
+            ),
+            const SizedBox(width: 6),
+            TextButton(onPressed: () => _pickBranch(context), child: const Text('اختيار فرع')),
           ],
         ),
       ),

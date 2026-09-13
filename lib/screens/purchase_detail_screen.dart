@@ -15,6 +15,7 @@ import '../providers/inventory_provider.dart';
 import '../services/attachment_service.dart';
 import '../widgets/common_widgets.dart';
 import '../widgets/status_styles.dart';
+import 'barcode_scanner_screen.dart';
 
 final _dateFormat = DateFormat('yyyy/MM/dd');
 final _attachmentService = AttachmentService();
@@ -60,6 +61,25 @@ class _PurchaseDetailScreenState extends State<PurchaseDetailScreen> {
   Future<(String, double)?> _showItemPickerDialog(BuildContext context, List<Product> products) async {
     String productId = products.first.id;
     final qtyController = TextEditingController(text: '1');
+
+    // مسح Barcode أثناء اختيار صنف لطلب الشراء (القسم V): وُجد ضمن قائمة
+    // الأصناف المتاحة هنا → يُختار مباشرة في القائمة المنسدلة. لم يوجد →
+    // رسالة واضحة عبر الـcontext الخارجي (وليس ctx الخاص بالـDialog، فهو
+    // يُغلَق أحيانًا قبل ظهور الرسالة) — بلا إنشاء صنف جديد من هنا؛ هذا
+    // يبقى ضمن شاشة "إضافة/تعديل صنف" نفسها حتى لا تتشعّب شاشة الطلب.
+    Future<void> scanBarcode(void Function(void Function()) setSheetState) async {
+      final code = await Navigator.of(context)
+          .push<String>(MaterialPageRoute(builder: (_) => const BarcodeScannerScreen()));
+      if (code == null) return;
+      final match = context.read<InventoryProvider>().findProductByBarcode(code);
+      if (match != null) {
+        setSheetState(() => productId = match.id);
+        return;
+      }
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('لا يوجد صنف بـ Barcode: $code')));
+    }
+
     final result = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -68,12 +88,23 @@ class _PurchaseDetailScreenState extends State<PurchaseDetailScreen> {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              DropdownButtonFormField<String>(
-                value: productId,
-                isExpanded: true,
-                decoration: const InputDecoration(labelText: 'الصنف'),
-                items: products.map((p) => DropdownMenuItem(value: p.id, child: Text(p.name))).toList(),
-                onChanged: (v) => setSheetState(() => productId = v!),
+              Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      value: productId,
+                      isExpanded: true,
+                      decoration: const InputDecoration(labelText: 'الصنف'),
+                      items: products.map((p) => DropdownMenuItem(value: p.id, child: Text(p.name))).toList(),
+                      onChanged: (v) => setSheetState(() => productId = v!),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.qr_code_scanner_outlined),
+                    tooltip: 'مسح Barcode',
+                    onPressed: () => scanBarcode(setSheetState),
+                  ),
+                ],
               ),
               const SizedBox(height: 12),
               TextField(

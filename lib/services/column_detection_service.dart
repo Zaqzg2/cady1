@@ -38,6 +38,7 @@ class ColumnDetectionService {
       'الكمية المتبقية',
       'رصيد',
       'الكمية الحالية',
+      'الكمية الفعلية',
     ],
     FieldType.sales: [
       'المبيعات',
@@ -88,6 +89,11 @@ class ColumnDetectionService {
     FieldType.goal1: ['هدف 1', 'هدف1', 'الهدف الأول', 'goal 1', 'goal1', 'الفئة الأولى'],
     FieldType.goal2: ['هدف 2', 'هدف2', 'الهدف الثاني', 'goal 2', 'goal2', 'الفئة الثانية'],
     FieldType.goal3: ['هدف 3', 'هدف3', 'الهدف الثالث', 'goal 3', 'goal3', 'الفئة الثالثة'],
+    FieldType.commission1: ['عمولة 1', 'عمولة1', 'العمولة الأولى', 'commission 1', 'commission1'],
+    FieldType.commission2: ['عمولة 2', 'عمولة2', 'العمولة الثانية', 'commission 2', 'commission2'],
+    FieldType.commission3: ['عمولة 3', 'عمولة3', 'العمولة الثالثة', 'commission 3', 'commission3'],
+    FieldType.supplier: ['المورد', 'مورد', 'supplier', 'vendor'],
+    FieldType.documentNumber: ['رقم المستند', 'رقم الفاتورة', 'رقم الطلب', 'document number', 'invoice number', 'reference'],
   };
 
   final _fuzzy = FuzzyMatchingService();
