@@ -6,7 +6,7 @@ import '../models/purchase_models.dart';
 enum InsightSeverity { info, warning, critical }
 
 /// ملاحظة ذكية واحدة ناتجة عن قاعدة محلية — [navigationHint] تلميح اختياري
-/// (مثال: 'purchase:<id>', 'goal:<id>') تستخدمه الواجهة لفتح التفاصيل مباشرة
+/// (مثال: `purchase:<id>`, `goal:<id>`) تستخدمه الواجهة لفتح التفاصيل مباشرة
 /// عند الضغط على الملاحظة، دون أن تعرف هذه الطبقة شيئًا عن الشاشات نفسها.
 class Insight {
   final String message;

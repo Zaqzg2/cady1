@@ -23,19 +23,15 @@ jobs:
         run: flutter pub get
 
       - name: Static analysis
-        run: flutter analyze --no-fatal-warnings > analyze.log 2>&1 || { cat analyze.log; exit 1; }
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos > analyze.log 2>&1 || { cat analyze.log; exit 1; }
         # بلا continue-on-error (قسم BUILD من المواصفة): خطأ تحليل حقيقي (error)
-        # يُسقط الخطوة فعليًا. --no-fatal-warnings تحديدًا لأن flutter analyze
-        # افتراضيًا يُفشل حتى على warnings الأسلوبية (سلوك موثَّق للأداة نفسها،
-        # وليس "خطأ بناء" حقيقي) — هذا بالضبط ما كانت continue-on-error الملغاة
-        # تتفادى، بدليل تعليقها القديم "فقط أخطاء الترجمة الحقيقية". info-level
-        # يبقى غير قاتل افتراضيًا بلا أي علم إضافي.
-        # ⚠️ redirection > لا pipe | عمدًا: exit code الأمر بعد > مضمون دومًا
-        # بأي shell بخلاف | (سلوك pipefail غير مضمون فعليًا حين لا يُحدَّد
-        # shell: bash صراحةً بهذا الملف — راجع نقاش GitHub الرسمي:
-        # github.com/actions/runner/issues/1955). لو استُخدم | tee هنا بلا
-        # ضمان pipefail، قد "تنجح" الخطوة زورًا رغم فشل flutter analyze فعليًا.
-        # الملف الكامل يُجمَّع أيضًا بخطوة "Collect full failure logs" أدناه.
+        # يُسقط الخطوة فعليًا. الطريف: --no-fatal-warnings وحدها **لا تكفي**
+        # فعليًا في flutter analyze (بخلاف dart analyze) — أول تشغيل حقيقي لها
+        # هنا فشل رغم عدم وجود أي error، فقط لوجود 39 info + warning واحدة.
+        # السبب موثَّق: خلل معروف بربط فحص fatal-warnings بـfatal-infos داخل
+        # flutter_tools (github.com/flutter/flutter/pull/113748) — لذا لازم
+        # الاثنان معًا. info-level تبقى غير قاتلة بلا أي علم في dart analyze
+        # الأصلي، لكن flutter analyze يحتاج التصريح الصريح كما هنا.
 
       - name: Run tests
         run: flutter test > test.log 2>&1 || { cat test.log; exit 1; }

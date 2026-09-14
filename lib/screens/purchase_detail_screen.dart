@@ -1,6 +1,3 @@
-import 'dart:typed_data';
-
-import 'package:cross_file/cross_file.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -404,7 +401,7 @@ class _PurchaseDetailScreenState extends State<PurchaseDetailScreen> {
       bytes = result.files.first.bytes;
       name = result.files.first.name;
     }
-    if (bytes == null || name == null || !context.mounted) return;
+    if (bytes == null || !context.mounted) return;
 
     final error = await context
         .read<InventoryProvider>()

@@ -126,7 +126,7 @@ class AnalyticsService {
     final list = byProduct.entries
         .map((e) =>
             productById[e.key] != null ? ProductQuantity(productById[e.key]!, e.value) : null)
-        .whereNotNull()
+        .nonNulls
         .toList()
       ..sort((a, b) => b.quantity.compareTo(a.quantity));
     return list.take(n).toList();
@@ -142,7 +142,7 @@ class AnalyticsService {
     final list = byProduct.entries
         .map((e) =>
             productById[e.key] != null ? ProductQuantity(productById[e.key]!, e.value) : null)
-        .whereNotNull()
+        .nonNulls
         .toList()
       ..sort((a, b) => a.quantity.compareTo(b.quantity));
     return list.take(n).toList();
