@@ -23,7 +23,8 @@ class DataReviewScreen extends StatelessWidget {
 
     if (session.targetKind == ImportTargetKind.goals ||
         session.targetKind == ImportTargetKind.incoming ||
-        session.targetKind == ImportTargetKind.count) {
+        session.targetKind == ImportTargetKind.count ||
+        session.targetKind == ImportTargetKind.purchase) {
       final GoalImportSummary summary;
       final String noun;
       switch (session.targetKind) {
@@ -33,6 +34,9 @@ class DataReviewScreen extends StatelessWidget {
         case ImportTargetKind.count:
           summary = await inventoryProvider.commitCountRows(rows: session.rows, fileName: session.fileName);
           noun = 'صنف جرد';
+        case ImportTargetKind.purchase:
+          summary = await inventoryProvider.commitPurchaseRows(rows: session.rows, fileName: session.fileName);
+          noun = 'طلب شراء';
         case ImportTargetKind.incoming:
         case ImportTargetKind.inventory:
           summary = await inventoryProvider.commitIncomingRows(rows: session.rows, fileName: session.fileName);

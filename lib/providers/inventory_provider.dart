@@ -1007,6 +1007,115 @@ class InventoryProvider extends ChangeNotifier {
     );
   }
 
+  /// استيراد طلبات الشراء (القسم Q) — يمر بنفس Pipeline الموحَّد، لكن الفرق
+  /// الجوهري عن الأهداف/الوارد/الجرد: عدة صفوف بالملف الواحد تنتمي غالبًا
+  /// لنفس طلب الشراء (سطر لكل صنف، ورقم الطلب/التاريخ/الفرع/المورد يتكرر
+  /// على كل سطر) — فتُجمَّع الصفوف حسب "رقم الطلب × الفرع" أولًا، ثم يُنشأ
+  /// أو يُحدَّث PurchaseRequest واحد لكل مجموعة بكل أصنافها معًا، بدل معاملة
+  /// كل صف كسجل طلب مستقل. صف بلا رقم طلب يبقى طلبًا قائمًا بذاته (لا يُدمَج
+  /// مع صفوف أخرى بلا رقم أيضًا) عبر مفتاح فريد له وحده.
+  Future<GoalImportSummary> commitPurchaseRows({
+    required List<ExtractedRow> rows,
+    required String fileName,
+  }) async {
+    await ensureDefaultBranch();
+    final skipped = <String>[];
+    final groups = <String, List<ExtractedRow>>{};
+    var noNumberCounter = 0;
+
+    for (final row in rows) {
+      if (row.status != RowReviewStatus.accepted) continue;
+      final nameCell = row.cellOf(FieldType.productName);
+      final displayName = nameCell?.value.trim() ?? '(بلا اسم)';
+      if (nameCell == null || nameCell.value.trim().isEmpty) {
+        skipped.add('(بلا اسم) — لا يوجد اسم صنف');
+        continue;
+      }
+      final branchCell = row.cellOf(FieldType.branch);
+      if (branchCell == null || branchCell.value.trim().isEmpty) {
+        skipped.add('$displayName — لم يُحدَّد الفرع');
+        continue;
+      }
+      final qtyText =
+          (row.cellOf(FieldType.requestedQuantity)?.value ?? row.cellOf(FieldType.quantity)?.value ?? '').trim();
+      final qty = double.tryParse(qtyText.replaceAll(',', ''));
+      if (qty == null) {
+        skipped.add('$displayName — الكمية المطلوبة غير صالحة');
+        continue;
+      }
+      final docNumber = row.cellOf(FieldType.documentNumber)?.value.trim();
+      final groupKey =
+          '${branchCell.value.trim()}|||${(docNumber == null || docNumber.isEmpty) ? '__no_number_${noNumberCounter++}' : docNumber}';
+      groups.putIfAbsent(groupKey, () => []).add(row);
+    }
+
+    var created = 0;
+    var updated = 0;
+
+    for (final groupRows in groups.values) {
+      final first = groupRows.first;
+      final branch = await getOrCreateBranch(first.cellOf(FieldType.branch)!.value);
+      final docNumber = first.cellOf(FieldType.documentNumber)?.value.trim();
+      final supplier = first.cellOf(FieldType.supplier)?.value.trim();
+      final dateText = first.cellOf(FieldType.documentDate)?.value.trim();
+      final hasDocNumber = docNumber != null && docNumber.isNotEmpty;
+
+      final existingMatch = hasDocNumber
+          ? purchaseRequests.where((r) => r.requestNumber == docNumber && r.branchId == branch.id)
+          : const Iterable<PurchaseRequest>.empty();
+      final isNew = existingMatch.isEmpty;
+      final request = isNew
+          ? PurchaseRequest(
+              requestNumber: hasDocNumber ? docNumber : _purchaseService.suggestRequestNumber(purchaseRequests, DateTime.now()),
+              branchId: branch.id,
+              date: (dateText != null && dateText.isNotEmpty) ? (DateTime.tryParse(dateText) ?? DateTime.now()) : DateTime.now(),
+              supplierName: (supplier != null && supplier.isNotEmpty) ? supplier : null,
+            )
+          : existingMatch.first;
+      if (!isNew && supplier != null && supplier.isNotEmpty) {
+        request.supplierName = supplier;
+      }
+
+      for (final row in groupRows) {
+        final product = await _resolveProduct(row, row.cellOf(FieldType.productName)!.value);
+        final qty = double.tryParse(
+                (row.cellOf(FieldType.requestedQuantity)?.value ?? row.cellOf(FieldType.quantity)?.value ?? '')
+                    .trim()
+                    .replaceAll(',', '')) ??
+            0;
+        final existingItem = request.items.where((i) => i.productId == product.id);
+        if (existingItem.isNotEmpty) {
+          existingItem.first.requestedQty += qty;
+        } else {
+          request.items.add(PurchaseRequestItem(productId: product.id, requestedQty: qty));
+        }
+      }
+
+      await savePurchaseRequest(request);
+      if (isNew) {
+        created++;
+      } else {
+        updated++;
+      }
+    }
+
+    await _repo.saveImportRecord(ImportRecord(
+      sourceType: ImportSourceType.excel,
+      fileName: fileName,
+      rawRowCount: rows.length,
+      acceptedRowCount: created + updated,
+    ));
+    await load();
+
+    return GoalImportSummary(
+      totalRows: rows.length,
+      importedRows: created,
+      updatedRows: updated,
+      skippedRows: skipped.length,
+      skipReasons: skipped,
+    );
+  }
+
   /// استيراد الجرد (القسم O) — غلاف رفيع فوق recordCountBatch الموجودة
   /// أصلًا (نفس الدالة التي تستخدمها شاشة الجرد اليدوي)، فهي من يحسب الفرق
   /// مع الرصيد النظامي فعليًا، لا هذه الدالة (لا منطق حساب مكرر — القسم ٢٨).

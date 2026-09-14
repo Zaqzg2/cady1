@@ -23,12 +23,22 @@ jobs:
         run: flutter pub get
 
       - name: Static analysis
-        run: flutter analyze
-        # بلا continue-on-error (قسم BUILD من المواصفة): أي خطأ تحليل حقيقي
-        # يُسقط الخطوة فعليًا الآن، فيظهر فورًا بدل أن يظهر لاحقًا كخطأ بناء غامض.
+        run: flutter analyze --no-fatal-warnings > analyze.log 2>&1 || { cat analyze.log; exit 1; }
+        # بلا continue-on-error (قسم BUILD من المواصفة): خطأ تحليل حقيقي (error)
+        # يُسقط الخطوة فعليًا. --no-fatal-warnings تحديدًا لأن flutter analyze
+        # افتراضيًا يُفشل حتى على warnings الأسلوبية (سلوك موثَّق للأداة نفسها،
+        # وليس "خطأ بناء" حقيقي) — هذا بالضبط ما كانت continue-on-error الملغاة
+        # تتفادى، بدليل تعليقها القديم "فقط أخطاء الترجمة الحقيقية". info-level
+        # يبقى غير قاتل افتراضيًا بلا أي علم إضافي.
+        # ⚠️ redirection > لا pipe | عمدًا: exit code الأمر بعد > مضمون دومًا
+        # بأي shell بخلاف | (سلوك pipefail غير مضمون فعليًا حين لا يُحدَّد
+        # shell: bash صراحةً بهذا الملف — راجع نقاش GitHub الرسمي:
+        # github.com/actions/runner/issues/1955). لو استُخدم | tee هنا بلا
+        # ضمان pipefail، قد "تنجح" الخطوة زورًا رغم فشل flutter analyze فعليًا.
+        # الملف الكامل يُجمَّع أيضًا بخطوة "Collect full failure logs" أدناه.
 
       - name: Run tests
-        run: flutter test
+        run: flutter test > test.log 2>&1 || { cat test.log; exit 1; }
 
       # القسم 3 من دليل الأعطال: بعض الحزم (خصوصًا ما يعتمد على
       # flutter_plugin_android_lifecycle مثل file_picker/image_picker) تتطلب
@@ -109,6 +119,12 @@ jobs:
         if: failure()
         run: |
           mkdir -p ci-failure-logs
+          # ⚠️ الإضافة الجديدة (analyze.log/test.log) بالذات: نسخة فارغة سابقة
+          # من هذا الأرشيف لم تحوِ شيئًا لأن الفحص هذا كان يجمع سجلات
+          # Gradle/Android فقط — عديم الفائدة حين يكون الفشل الفعلي من
+          # flutter analyze أو flutter test نفسيهما، كما تبيَّن فعليًا هنا.
+          cp analyze.log ci-failure-logs/ 2>/dev/null || true
+          cp test.log ci-failure-logs/ 2>/dev/null || true
           find . -name "daemon-*.out.log" -exec cp {} ci-failure-logs/ \; 2>/dev/null || true
           find . -name "problems-report.html" -exec cp {} ci-failure-logs/ \; 2>/dev/null || true
           find "$HOME/.gradle" -name "*.log" -exec cp {} ci-failure-logs/ \; 2>/dev/null || true

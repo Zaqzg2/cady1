@@ -47,6 +47,9 @@ enum FieldType {
   supplier,
   documentNumber,
   requestedQuantity,
+  /// تاريخ عام للمستند (طلب الشراء تحديدًا — القسم Q) وليس تاريخ إنتاج/صلاحية
+  /// صنف؛ حقل منفصل عمدًا حتى لا يختلط بـ productionDate/expiryDate.
+  documentDate,
   ignore,
   unknown,
 }
@@ -54,7 +57,7 @@ enum FieldType {
 /// ماذا يمثّل هذا الاستيراد فعليًا؟ يحدد أي مسار Commit يُستدعى من شاشة
 /// المراجعة — كلاهما يمر بنفس Pipeline (Preview → Mapping → Validation →
 /// Review) قبل ذلك تمامًا (القسم D: "كل نوع يستخدم نفس pipeline").
-enum ImportTargetKind { inventory, goals, incoming, count }
+enum ImportTargetKind { inventory, goals, incoming, count, purchase }
 
 extension FieldTypeLabel on FieldType {
   String get labelAr => switch (this) {
@@ -80,6 +83,7 @@ extension FieldTypeLabel on FieldType {
         FieldType.supplier => 'المورد',
         FieldType.documentNumber => 'رقم المستند',
         FieldType.requestedQuantity => 'الكمية المطلوبة',
+        FieldType.documentDate => 'التاريخ',
         FieldType.ignore => 'تجاهل',
         FieldType.unknown => 'غير معروف',
       };

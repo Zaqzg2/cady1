@@ -165,6 +165,50 @@ class ImportSessionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// استيراد طلبات شراء من Excel/CSV (القسم Q). التحقق هنا يبقى على مستوى
+  /// الصف (فرع + كمية مطلوبة) تمامًا كالوارد؛ أما تجميع الصفوف في طلبات
+  /// فعلية (رقم الطلب قد يتكرر على عدة صفوف صنف) فيحدث لاحقًا عند الاعتماد
+  /// في commitPurchaseRows — لا داعي لتكراره هنا في مرحلة المراجعة.
+  Future<void> importPurchaseExcelOrCsv(
+    Uint8List bytes,
+    String name,
+    List<Product> existingProducts,
+  ) async {
+    reset();
+    _retry = () => importPurchaseExcelOrCsv(bytes, name, existingProducts);
+    targetKind = ImportTargetKind.purchase;
+    sourceType = name.toLowerCase().endsWith('.csv') ? ImportSourceType.csv : ImportSourceType.excel;
+    fileName = name;
+    step = ImportStep.processing;
+    notifyListeners();
+
+    final result = await _excelService.importFromBytes(bytes, name);
+    if (!result.success) {
+      _fail(result.error ?? 'فشل استيراد الملف.');
+      return;
+    }
+
+    _rawTable = result.rawTable;
+    _headerRowIndex = result.headerRowIndex;
+    columnMappings = result.columnMappings;
+    rows = result.rows;
+    matchAgainstCatalog(existingProducts);
+
+    for (final row in rows) {
+      final branchCell = row.cellOf(FieldType.branch);
+      if (branchCell == null || branchCell.value.trim().isEmpty) {
+        row.validationIssues.add('لم يُحدَّد الفرع — طلبات الشراء تتطلب فرعًا صريحًا، بلا افتراض تلقائي.');
+      }
+      final qty = row.cellOf(FieldType.requestedQuantity) ?? row.cellOf(FieldType.quantity);
+      if (qty == null || double.tryParse(qty.value.trim().replaceAll(',', '')) == null) {
+        row.validationIssues.add('الكمية المطلوبة غير موجودة أو غير رقمية.');
+      }
+    }
+
+    step = result.needsManualMapping ? ImportStep.columnMapping : ImportStep.review;
+    notifyListeners();
+  }
+
   /// كلمات صفوف الإجمالي/الملخص التي لا تمثّل صنفًا فعليًا (القسم J من
   /// مواصفة الأهداف) — تُستبعَد تلقائيًا لكن بسبب واضح ومرئي، وليس بصمت.
   static const _summaryRowKeywords = [

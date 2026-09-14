@@ -62,7 +62,6 @@ class ColumnDetectionService {
       'الصلاحية',
       'تاريخ الصلاحية',
       'انتهاء الصلاحية',
-      'التاريخ',
     ],
     FieldType.branch: [
       'الفرع',
@@ -94,6 +93,10 @@ class ColumnDetectionService {
     FieldType.commission3: ['عمولة 3', 'عمولة3', 'العمولة الثالثة', 'commission 3', 'commission3'],
     FieldType.supplier: ['المورد', 'مورد', 'supplier', 'vendor'],
     FieldType.documentNumber: ['رقم المستند', 'رقم الفاتورة', 'رقم الطلب', 'document number', 'invoice number', 'reference'],
+    FieldType.requestedQuantity: ['الكمية المطلوبة', 'كمية الطلب', 'المطلوب', 'requested quantity', 'qty requested'],
+    // "التاريخ" وحدها بلا تخصيص (بخلاف "تاريخ الصلاحية"/"تاريخ الإنتاج" أعلاه)
+    // تُقرأ كتاريخ مستند عام — القسم Q تحديدًا (تاريخ طلب الشراء).
+    FieldType.documentDate: ['التاريخ', 'تاريخ الطلب', 'تاريخ المستند', 'date', 'order date'],
   };
 
   final _fuzzy = FuzzyMatchingService();
