@@ -1,5 +1,3 @@
-import 'package:collection/collection.dart';
-
 import '../models/catalog_models.dart';
 import '../models/import_models.dart';
 import '../models/inventory_models.dart';
